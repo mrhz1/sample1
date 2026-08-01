@@ -37,13 +37,19 @@ Produces two output files:
     DICOM codes internally, this only affects what's displayed.
 
 Usage:
-    python match_reports.py <images_folder> <reports_folder> [output.xlsx] [--debug]
+    python match_reports.py <images_folder> <reports_folder> [output.xlsx] [--debug] [--rcode CODE[,CODE...]]
 
     --debug prints, for every file/folder involved, exactly why it was or
     wasn't picked up: dcmread failures (with the exception message and
     whether forcing the read would have worked), parsed PDF dates/modality,
     and a side-by-side of R-code folder names (with repr() to expose hidden
     whitespace/case differences) so a "should match" case can be diagnosed.
+
+    --rcode restricts the whole run to one or more R-code subfolders instead
+    of scanning everything under images_folder/reports_folder - e.g.
+    --rcode R123 or --rcode R123,R456. Both root folders are still passed
+    in full (so the shared naming convention still applies); every other
+    subfolder is skipped entirely rather than just filtered out afterward.
 """
 
 import re
@@ -147,10 +153,10 @@ def read_dicom_study(path, debug=False):
     return study_date, modality
 
 
-def scan_reports(reports_root, debug=False):
+def scan_reports(reports_root, debug=False, rcode_filter=None):
     """rcode -> list of {"path", "date", "modality"}"""
     reports = defaultdict(list)
-    rcode_dirs = sorted(p for p in reports_root.iterdir() if p.is_dir())
+    rcode_dirs = list_rcode_dirs(reports_root, rcode_filter)
     if debug:
         print(f"reports folder: found {len(rcode_dirs)} subfolders")
         for d in rcode_dirs:
@@ -183,9 +189,36 @@ def build_indices(rcode_reports):
     return by_date_modality, by_date
 
 
+def parse_args(argv):
+    debug = "--debug" in argv
+    rcode_filter = None
+    positional = []
+    i = 0
+    while i < len(argv):
+        a = argv[i]
+        if a == "--debug":
+            i += 1
+        elif a == "--rcode":
+            if i + 1 >= len(argv):
+                print("--rcode requires a value, e.g. --rcode R123 or --rcode R123,R456")
+                sys.exit(1)
+            rcode_filter = {c.strip() for c in argv[i + 1].split(",") if c.strip()}
+            i += 2
+        else:
+            positional.append(a)
+            i += 1
+    return positional, debug, rcode_filter
+
+
+def list_rcode_dirs(root, rcode_filter):
+    dirs = sorted(p for p in root.iterdir() if p.is_dir())
+    if rcode_filter is not None:
+        dirs = [d for d in dirs if d.name in rcode_filter]
+    return dirs
+
+
 def main():
-    debug = "--debug" in sys.argv
-    args = [a for a in sys.argv[1:] if a != "--debug"]
+    args, debug, rcode_filter = parse_args(sys.argv[1:])
 
     if len(args) < 2:
         print(__doc__)
@@ -203,12 +236,15 @@ def main():
     output_xlsx = Path(args[2]) if len(args) > 2 else Path.cwd() / "match_report.xlsx"
     detail_xlsx = output_xlsx.with_name(output_xlsx.stem + "_detail.xlsx")
 
+    if rcode_filter is not None:
+        print(f"Restricting scan to R-code(s): {sorted(rcode_filter)}")
+
     print("Scanning PDF reports...")
-    reports = scan_reports(reports_root, debug=debug)
+    reports = scan_reports(reports_root, debug=debug, rcode_filter=rcode_filter)
 
     if debug:
         print("\n--- R-code comparison ---")
-        image_rcodes = {p.name for p in images_root.iterdir() if p.is_dir()}
+        image_rcodes = {p.name for p in list_rcode_dirs(images_root, rcode_filter)}
         report_rcodes = set(reports)
         print(f"In both: {sorted(image_rcodes & report_rcodes)}")
         print(f"Only in images: {sorted(image_rcodes - report_rcodes)}")
@@ -219,7 +255,7 @@ def main():
     # (rcode, study_date, modality) -> {"count", "matched_pdfs"}
     summary = defaultdict(lambda: {"count": 0, "matched_pdfs": set()})
     matched_pdf_paths = set()
-    rcode_dirs = sorted(p for p in images_root.iterdir() if p.is_dir())
+    rcode_dirs = list_rcode_dirs(images_root, rcode_filter)
 
     detail_wb = Workbook(write_only=True)
     detail_ws = detail_wb.create_sheet(title="Detail")
