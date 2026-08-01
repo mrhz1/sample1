@@ -83,7 +83,7 @@ MODALITY_RE = re.compile(
 MODALITY_DISPLAY_NAMES = {
     "CT": "CT",
     "MR": "MRI",
-    "US": "Ultrasound",
+    "US": "Echo",
     "CR": "X-Ray",
     "DX": "X-Ray",
     "MG": "Mammography",
