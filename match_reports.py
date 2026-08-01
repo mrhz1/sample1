@@ -78,12 +78,16 @@ MODALITY_RE = re.compile(
     r"(?<![A-Z0-9])(" + "|".join(re.escape(k) for k in MODALITY_ALIASES) + r")(?![A-Z0-9])"
 )
 
-# DICOM Modality code -> human-readable label, for display in the Excel
-# outputs only. Extend as you encounter more codes in the real data.
+# Raw DICOM Modality tag value (uppercased) -> human-readable label, for
+# display in the Excel outputs only. Real-world files don't always use the
+# standard 2-letter code (e.g. some write "Ultrasonic" instead of "US") -
+# extend this as you encounter more raw values in the real data.
 MODALITY_DISPLAY_NAMES = {
     "CT": "CT",
     "MR": "MRI",
     "US": "Echo",
+    "ULTRASOUND": "Echo",
+    "ULTRASONIC": "Echo",
     "CR": "X-Ray",
     "DX": "X-Ray",
     "MG": "Mammography",
@@ -98,7 +102,7 @@ MODALITY_DISPLAY_NAMES = {
 def display_modality(code):
     if not code:
         return code
-    return MODALITY_DISPLAY_NAMES.get(code, code)
+    return MODALITY_DISPLAY_NAMES.get(code.strip().upper(), code)
 
 
 def parse_pdf_date(name):
