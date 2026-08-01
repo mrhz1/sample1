@@ -263,7 +263,7 @@ def main():
         detail_ws.column_dimensions[column].width = width
     detail_ws.freeze_panes = "A2"
     detail_ws.append([
-        "R-Code", "DICOM File", "DICOM Study Date", "Modality",
+        "Code", "DICOM File", "DICOM Study Date", "Modality",
         "Matched PDF File", "Match Status",
     ])
 
@@ -308,18 +308,13 @@ def main():
     ws = wb.active
     ws.title = "Summary"
     ws.append([
-        "R-Code", "Study Date", "Modality", "DICOM File Count",
-        "Matched PDF File(s)", "Match Status", "Other PDFs In Folder",
+        "Code", "Study Date", "Modality", "DICOM File Count",
+        "Matched PDF File(s)", "Match Status",
     ])
 
     matched = ambiguous = unmatched_images = 0
     for (rcode, study_date, modality), info in sorted(summary.items()):
         rcode_reports = reports.get(rcode, [])
-        others = ", ".join(
-            f"{e['date'] or 'unparsed'}/{display_modality(e['modality']) or '?'}"
-            for e in rcode_reports
-            if str(e["path"]) not in info["matched_pdfs"]
-        )
         if info["matched_pdfs"]:
             status = "Matched"
             matched += 1
@@ -331,7 +326,7 @@ def main():
             unmatched_images += 1
         ws.append([
             rcode, study_date, display_modality(modality), info["count"],
-            ", ".join(sorted(info["matched_pdfs"])), status, others,
+            ", ".join(sorted(info["matched_pdfs"])), status,
         ])
 
     unmatched_pdf = 0
@@ -340,11 +335,11 @@ def main():
             if entry["path"] not in matched_pdf_paths:
                 ws.append([
                     rcode, entry["date"] or "", display_modality(entry["modality"]) or "", "",
-                    str(entry["path"]), "No DICOM images found", "",
+                    str(entry["path"]), "No DICOM images found",
                 ])
                 unmatched_pdf += 1
 
-    for column, width in zip("ABCDEFG", (12, 14, 10, 16, 45, 40, 26)):
+    for column, width in zip("ABCDEF", (12, 14, 10, 16, 45, 40)):
         ws.column_dimensions[column].width = width
     ws.freeze_panes = "A2"
     wb.save(output_xlsx)
