@@ -80,6 +80,12 @@ def dump_sr_tree(ds, indent=0):
         dump_sr_tree(item, indent + 1)
 
 
+def print_raw_dataset(ds):
+    print("\n  --- Full raw dataset (every tag pydicom recognizes, nested sequences included) ---")
+    for line in str(ds).splitlines():
+        print(f"  {line}")
+
+
 def print_sr_contents(ds):
     """Print a DICOM Structured Report's content tree (it has no pixel data
     to render - the report *is* this nested tree of text/coded findings),
@@ -92,10 +98,7 @@ def print_sr_contents(ds):
           f"VerificationFlag: {ds.get('VerificationFlag', '')}")
     print("  Content (readable summary):")
     dump_sr_tree(ds)
-
-    print("\n  --- Full raw dataset (every tag pydicom recognizes, nested sequences included) ---")
-    for line in str(ds).splitlines():
-        print(f"  {line}")
+    print_raw_dataset(ds)
 
 
 def normalize_pixel_array(arr):
@@ -127,11 +130,11 @@ def dicom_to_png(dcm_path, png_path):
                 print(f"  {tag}: {value}")
 
         if "PixelData" not in ds:
+            print("  (no pixel data - this isn't a renderable image; printing full contents instead)")
             if "ContentSequence" in ds:
-                print("  (this is a Structured Report - no pixel data, printing its content tree instead)")
                 print_sr_contents(ds)
             else:
-                print("  (no pixel data - can't render an image)")
+                print_raw_dataset(ds)
             return False
 
         try:
