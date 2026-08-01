@@ -4,7 +4,7 @@ Match PDF reports to DICOM studies.
 Expects two folder trees sharing the same subfolder naming (e.g. "R123"):
     images/R123/...   -> DICOM files (mixed in with other junk, e.g. viewer apps)
     reports/R123/...  -> PDF report(s), filename containing the R-code and a
-                         date like 07-07-2007 (DD-MM-YYYY)
+                         date like 01-15-2014 (MM-DD-YYYY)
 
 Matching is done by:
     1. R-code (the shared subfolder name) - primary key
@@ -36,7 +36,7 @@ def parse_pdf_date(name):
     match = DATE_RE.search(name)
     if not match:
         return None
-    day, month, year = match.groups()
+    month, day, year = match.groups()
     return f"{year}{month}{day}"
 
 
