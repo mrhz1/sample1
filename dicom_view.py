@@ -27,6 +27,66 @@ TAGS_TO_PRINT = [
 ]
 
 
+def format_sr_item(item):
+    """Return (label, value_type, value) for one SR content item."""
+    label = ""
+    if item.get("ConceptNameCodeSequence"):
+        label = item.ConceptNameCodeSequence[0].get("CodeMeaning", "")
+    value_type = item.get("ValueType", "")
+    value = ""
+    if value_type == "TEXT":
+        value = item.get("TextValue", "")
+    elif value_type == "CODE" and item.get("ConceptCodeSequence"):
+        value = item.ConceptCodeSequence[0].get("CodeMeaning", "")
+    elif value_type == "NUM" and item.get("MeasuredValueSequence"):
+        mv = item.MeasuredValueSequence[0]
+        num = mv.get("NumericValue", "")
+        units = ""
+        if mv.get("MeasurementUnitsCodeSequence"):
+            units = mv.MeasurementUnitsCodeSequence[0].get("CodeValue", "")
+        value = f"{num} {units}".strip()
+    elif value_type == "DATETIME":
+        value = item.get("DateTime", "")
+    elif value_type == "DATE":
+        value = item.get("Date", "")
+    elif value_type == "TIME":
+        value = item.get("Time", "")
+    elif value_type == "UIDREF":
+        value = item.get("UID", "")
+    elif value_type == "PNAME":
+        value = str(item.get("PersonName", ""))
+    elif value_type in ("IMAGE", "COMPOSITE", "WAVEFORM") and item.get("ReferencedSOPSequence"):
+        ref = item.ReferencedSOPSequence[0]
+        value = f"-> references SOPInstanceUID {ref.get('ReferencedSOPInstanceUID', '')}"
+    return label, value_type, value
+
+
+def dump_sr_tree(ds, indent=0):
+    for item in ds.get("ContentSequence", []):
+        label, value_type, value = format_sr_item(item)
+        prefix = "  " * (indent + 1)
+        line = f"{prefix}- {label or '(unlabeled)'}"
+        if value_type:
+            line += f" [{value_type}]"
+        if value:
+            line += f": {value}"
+        print(line)
+        dump_sr_tree(item, indent + 1)
+
+
+def print_sr_contents(ds):
+    """Print a DICOM Structured Report's content tree (it has no pixel data
+    to render - the report *is* this nested tree of text/coded findings)."""
+    title = ""
+    if ds.get("ConceptNameCodeSequence"):
+        title = ds.ConceptNameCodeSequence[0].get("CodeMeaning", "")
+    print(f"  SR Document Title: {title or '(none)'}")
+    print(f"  CompletionFlag: {ds.get('CompletionFlag', '')}  "
+          f"VerificationFlag: {ds.get('VerificationFlag', '')}")
+    print("  Content:")
+    dump_sr_tree(ds)
+
+
 def normalize_pixel_array(arr):
     """Reduce a pixel array of any DICOM shape down to (H, W) or (H, W, 3/4).
 
@@ -56,7 +116,11 @@ def dicom_to_png(dcm_path, png_path):
                 print(f"  {tag}: {value}")
 
         if "PixelData" not in ds:
-            print("  (no pixel data - can't render an image)")
+            if "ContentSequence" in ds:
+                print("  (this is a Structured Report - no pixel data, printing its content tree instead)")
+                print_sr_contents(ds)
+            else:
+                print("  (no pixel data - can't render an image)")
             return False
 
         try:
