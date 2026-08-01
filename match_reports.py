@@ -3,20 +3,26 @@ Match PDF reports to DICOM studies and record the exact file-level linkage.
 
 Expects two folder trees sharing the same subfolder naming (e.g. "R123"):
     images/R123/...   -> DICOM files (mixed in with other junk, e.g. viewer apps)
-    reports/R123/...  -> PDF report(s), filename containing the R-code and a
-                         date like 01-15-2014 (MM-DD-YYYY)
+    reports/R123/...  -> PDF report(s), filename containing the R-code, a
+                         modality (CT / MRI / Echo / ...), and a date like
+                         01-15-2014 (MM-DD-YYYY), e.g. "R123 CT 10-10-2010.pdf"
 
-Matching is done by:
-    1. R-code (the shared subfolder name) - primary key
-    2. Study date - DICOM StudyDate (YYYYMMDD) vs the date parsed out of the
-       PDF filename, to disambiguate when a folder holds more than one study.
+Matching is done in tiers, strongest first:
+    1. R-code (the shared subfolder name) - required for any match at all.
+    2. Study date + Modality - DICOM StudyDate (YYYYMMDD) and Modality
+       (CT/MR/US/...) both matched against the PDF filename. This is what
+       correctly splits same-day-different-study cases (e.g. a CT and an
+       Echo done on the same date) that date-only matching would conflate.
+    3. Study date only - used as a fallback when the modality can't be
+       parsed from the PDF filename or is missing from the DICOM tag.
+    Anything weaker than that is left for manual review rather than guessed.
 
 Produces two output files:
-    <output>.xlsx        - one row per study (R-code + study date): counts,
-                            modalities, which PDF(s) it matched, and any
+    <output>.xlsx        - one row per study (R-code + date + modality):
+                            counts, which PDF(s) it matched, and any
                             unmatched PDFs. Small - safe to eyeball in Excel.
     <output>_detail.csv  - one row per individual DICOM file, with the exact
-                            PDF filename it was matched to (blank if none).
+                            PDF full path it was matched to (blank if none).
                             This is the file-level audit trail. It's a CSV,
                             not a second xlsx sheet, because Excel sheets cap
                             at ~1,048,576 rows - a million-image run would
@@ -28,8 +34,8 @@ Usage:
 
     --debug prints, for every file/folder involved, exactly why it was or
     wasn't picked up: dcmread failures (with the exception message and
-    whether forcing the read would have worked), parsed PDF dates, and a
-    side-by-side of R-code folder names (with repr() to expose hidden
+    whether forcing the read would have worked), parsed PDF dates/modality,
+    and a side-by-side of R-code folder names (with repr() to expose hidden
     whitespace/case differences) so a "should match" case can be diagnosed.
 """
 
@@ -44,6 +50,28 @@ from openpyxl import Workbook
 
 DATE_RE = re.compile(r"(\d{2})[-_.](\d{2})[-_.](\d{4})")
 
+# PDF-filename token (uppercased) -> standard DICOM Modality code.
+# Extend this as you find more variants in the real filenames.
+MODALITY_ALIASES = {
+    "CT": "CT",
+    "MRI": "MR",
+    "MR": "MR",
+    "ECHO": "US",
+    "ECHOCARDIOGRAM": "US",
+    "ULTRASOUND": "US",
+    "US": "US",
+    "XRAY": "CR",
+    "X-RAY": "CR",
+    "DX": "DX",
+    "MAMMO": "MG",
+    "MG": "MG",
+    "PET": "PT",
+    "NM": "NM",
+}
+MODALITY_RE = re.compile(
+    r"(?<![A-Z0-9])(" + "|".join(re.escape(k) for k in MODALITY_ALIASES) + r")(?![A-Z0-9])"
+)
+
 
 def parse_pdf_date(name):
     match = DATE_RE.search(name)
@@ -51,6 +79,13 @@ def parse_pdf_date(name):
         return None
     month, day, year = match.groups()
     return f"{year}{month}{day}"
+
+
+def parse_pdf_modality(name):
+    match = MODALITY_RE.search(name.upper())
+    if not match:
+        return None
+    return MODALITY_ALIASES[match.group(1)]
 
 
 def read_dicom_study(path, debug=False):
@@ -81,8 +116,8 @@ def read_dicom_study(path, debug=False):
 
 
 def scan_reports(reports_root, debug=False):
-    """rcode -> {date_or_None: [pdf_path, ...]}"""
-    reports = defaultdict(lambda: defaultdict(list))
+    """rcode -> list of {"path", "date", "modality"}"""
+    reports = defaultdict(list)
     rcode_dirs = sorted(p for p in reports_root.iterdir() if p.is_dir())
     if debug:
         print(f"reports folder: found {len(rcode_dirs)} subfolders")
@@ -96,10 +131,24 @@ def scan_reports(reports_root, debug=False):
             if not path.is_file():
                 continue
             date = parse_pdf_date(path.name)
-            reports[rcode][date].append(path)
+            modality = parse_pdf_modality(path.name)
+            reports[rcode].append({"path": path, "date": date, "modality": modality})
             if debug:
-                print(f"  {path.name!r} -> parsed date {date!r}")
+                print(f"  {path.name!r} -> date={date!r} modality={modality!r}")
     return reports
+
+
+def build_indices(rcode_reports):
+    """entries -> (by_date_modality, by_date) lookup dicts for one R-code."""
+    by_date_modality = defaultdict(list)
+    by_date = defaultdict(list)
+    for entry in rcode_reports:
+        if entry["date"] is None:
+            continue
+        by_date[entry["date"]].append(entry)
+        if entry["modality"] is not None:
+            by_date_modality[(entry["date"], entry["modality"])].append(entry)
+    return by_date_modality, by_date
 
 
 def main():
@@ -135,8 +184,8 @@ def main():
         print("--- end R-code comparison ---\n")
 
     print("Scanning DICOM images and writing per-file detail...")
-    # (rcode, study_date) -> {"count": n, "modalities": set(), "matched_pdfs": set()}
-    summary = defaultdict(lambda: {"count": 0, "modalities": set(), "matched_pdfs": set()})
+    # (rcode, study_date, modality) -> {"count", "matched_pdfs"}
+    summary = defaultdict(lambda: {"count": 0, "matched_pdfs": set()})
     matched_pdf_paths = set()
     rcode_dirs = sorted(p for p in images_root.iterdir() if p.is_dir())
 
@@ -149,7 +198,8 @@ def main():
 
         for rcode_dir in rcode_dirs:
             rcode = rcode_dir.name
-            rcode_reports = reports.get(rcode, {})
+            rcode_reports = reports.get(rcode, [])
+            by_date_modality, by_date = build_indices(rcode_reports)
             if debug:
                 print(f"\nScanning images/{rcode}...")
             for path in rcode_dir.rglob("*"):
@@ -160,24 +210,23 @@ def main():
                     continue
                 study_date, modality = info
 
-                bucket = summary[(rcode, study_date)]
-                bucket["count"] += 1
-                if modality:
-                    bucket["modalities"].add(modality)
-
-                candidate_pdfs = rcode_reports.get(study_date, []) if rcode_reports else []
-                if candidate_pdfs:
-                    status = "Matched (folder + date)"
-                    pdf_paths_str = "; ".join(str(p) for p in candidate_pdfs)
-                    for p in candidate_pdfs:
-                        matched_pdf_paths.add(p)
-                        bucket["matched_pdfs"].add(str(p))
-                elif rcode_reports:
-                    status = "Same folder, date unmatched"
-                    pdf_paths_str = ""
+                if modality and (study_date, modality) in by_date_modality:
+                    matches = by_date_modality[(study_date, modality)]
+                    status = "Matched (folder + date + modality)"
+                elif study_date in by_date:
+                    matches = by_date[study_date]
+                    status = "Matched (folder + date, modality unconfirmed)"
                 else:
-                    status = "No PDF report found"
-                    pdf_paths_str = ""
+                    matches = []
+                    status = "Same folder, date unmatched" if rcode_reports else "No PDF report found"
+
+                bucket = summary[(rcode, study_date, modality)]
+                bucket["count"] += 1
+
+                pdf_paths_str = "; ".join(str(m["path"]) for m in matches)
+                for m in matches:
+                    matched_pdf_paths.add(m["path"])
+                    bucket["matched_pdfs"].add(str(m["path"]))
 
                 writer.writerow([rcode, str(path), study_date, modality, pdf_paths_str, status])
 
@@ -187,43 +236,49 @@ def main():
     ws = wb.active
     ws.title = "Summary"
     ws.append([
-        "R-Code", "Study Date", "DICOM File Count", "Modalities",
-        "Matched PDF File(s)", "Match Status", "Other PDF Dates In Folder",
+        "R-Code", "Study Date", "Modality", "DICOM File Count",
+        "Matched PDF File(s)", "Match Status", "Other PDFs In Folder",
     ])
 
     matched = ambiguous = unmatched_images = 0
-    for (rcode, study_date), info in sorted(summary.items()):
-        rcode_reports = reports.get(rcode, {})
-        other_dates = ", ".join(sorted(d or "unparsed" for d in rcode_reports if d != study_date))
+    for (rcode, study_date, modality), info in sorted(summary.items()):
+        rcode_reports = reports.get(rcode, [])
+        others = ", ".join(
+            f"{e['date'] or 'unparsed'}/{e['modality'] or '?'}"
+            for e in rcode_reports
+            if str(e["path"]) not in info["matched_pdfs"]
+        )
         if info["matched_pdfs"]:
-            status = "Matched (folder + date)"
+            status = "Matched"
             matched += 1
         elif rcode_reports:
-            status = "Same folder, date unmatched - review manually"
+            status = "Same folder, no date/modality match - review manually"
             ambiguous += 1
         else:
             status = "No PDF report found"
             unmatched_images += 1
         ws.append([
-            rcode, study_date, info["count"], ", ".join(sorted(info["modalities"])),
-            ", ".join(sorted(info["matched_pdfs"])), status, other_dates,
+            rcode, study_date, modality, info["count"],
+            ", ".join(sorted(info["matched_pdfs"])), status, others,
         ])
 
     unmatched_pdf = 0
-    for rcode, by_date in sorted(reports.items()):
-        for date, pdf_list in sorted(by_date.items(), key=lambda kv: kv[0] or ""):
-            for pdf_path in pdf_list:
-                if pdf_path not in matched_pdf_paths:
-                    ws.append([rcode, date or "", "", "", str(pdf_path), "No DICOM images found", ""])
-                    unmatched_pdf += 1
+    for rcode, entries in sorted(reports.items()):
+        for entry in sorted(entries, key=lambda e: (e["date"] or "", e["modality"] or "")):
+            if entry["path"] not in matched_pdf_paths:
+                ws.append([
+                    rcode, entry["date"] or "", entry["modality"] or "", "",
+                    str(entry["path"]), "No DICOM images found", "",
+                ])
+                unmatched_pdf += 1
 
-    for column, width in zip("ABCDEFG", (12, 14, 16, 14, 40, 32, 26)):
+    for column, width in zip("ABCDEFG", (12, 14, 10, 16, 45, 40, 26)):
         ws.column_dimensions[column].width = width
     ws.freeze_panes = "A2"
     wb.save(output_xlsx)
 
-    print(f"\nMatched study-date buckets: {matched}")
-    print(f"Same folder but date mismatch (needs review): {ambiguous}")
+    print(f"\nMatched study buckets: {matched}")
+    print(f"Same folder, no date/modality match (needs review): {ambiguous}")
     print(f"DICOM studies with no PDF report: {unmatched_images}")
     print(f"PDF reports with no DICOM images: {unmatched_pdf}")
     print(f"Summary saved to: {output_xlsx}")
