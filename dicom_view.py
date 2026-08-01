@@ -18,10 +18,11 @@ import numpy as np
 import pydicom
 from PIL import Image
 
-# pydicom truncates long text/byte values in str(ds) to "Array of N elements"
-# past this many chars (default 16) - raise it so full SR findings text and
-# other long strings print in full instead of being hidden.
-pydicom.dataelem.DataElement.maxBytesToDisplay = 100_000
+# VRs that hold binary payloads (pixel-like data, compressed streams, unknown
+# private data) rather than human-readable text. These must stay summarized
+# in the raw dump - printing them in full dumps raw bytes as unreadable junk
+# (e.g. a small embedded icon thumbnail) right alongside genuine report text.
+BINARY_VRS = {"OB", "OD", "OF", "OL", "OV", "OW", "UN", "OB or OW", "US or SS", "US or SS or OW"}
 
 
 TAGS_TO_PRINT = [
@@ -80,9 +81,40 @@ def dump_sr_tree(ds, indent=0):
         dump_sr_tree(item, indent + 1)
 
 
+def format_dataset_lines(ds, indent=0):
+    """Recursively format every element in a dataset, full text values but
+    binary VRs summarized as "<binary data, N bytes>" instead of dumped raw."""
+    lines = []
+    prefix = "  " * indent
+    for elem in ds:
+        tag_str = f"({elem.tag.group:04x},{elem.tag.element:04x})"
+        name = elem.name
+        vr = elem.VR or ""
+
+        if vr == "SQ":
+            items = elem.value or []
+            lines.append(f"{prefix}{tag_str} {name}  SQ: {len(items)} item(s)")
+            for i, item in enumerate(items):
+                lines.append(f"{prefix}  [item {i}]")
+                lines.extend(format_dataset_lines(item, indent + 2))
+            continue
+
+        if vr in BINARY_VRS:
+            try:
+                length = len(elem.value) if elem.value is not None else 0
+            except TypeError:
+                length = 0
+            lines.append(f"{prefix}{tag_str} {name}  {vr}: <binary data, {length} bytes>")
+            continue
+
+        lines.append(f"{prefix}{tag_str} {name}  {vr}: {elem.value!r}")
+    return lines
+
+
 def print_raw_dataset(ds):
-    print("\n  --- Full raw dataset (every tag pydicom recognizes, nested sequences included) ---")
-    for line in str(ds).splitlines():
+    print("\n  --- Full raw dataset (every tag pydicom recognizes, nested sequences included; "
+          "binary fields summarized, not dumped) ---")
+    for line in format_dataset_lines(ds):
         print(f"  {line}")
 
 
