@@ -12,7 +12,13 @@ Matching is done by:
        PDF filename, to disambiguate when a folder holds more than one study.
 
 Usage:
-    python match_reports.py <images_folder> <reports_folder> [output.xlsx]
+    python match_reports.py <images_folder> <reports_folder> [output.xlsx] [--debug]
+
+    --debug prints, for every file/folder involved, exactly why it was or
+    wasn't picked up: dcmread failures (with the exception message and
+    whether forcing the read would have worked), parsed PDF dates, and a
+    side-by-side of R-code folder names (with repr() to expose hidden
+    whitespace/case differences) so a "should match" case can be diagnosed.
 """
 
 import re
@@ -34,23 +40,49 @@ def parse_pdf_date(name):
     return f"{year}{month}{day}"
 
 
-def read_dicom_study(path):
+def read_dicom_study(path, debug=False):
     try:
         ds = pydicom.dcmread(str(path), stop_before_pixels=True, force=False)
-    except Exception:
+    except Exception as exc:
+        if debug:
+            forced_ok = False
+            forced_date = None
+            try:
+                ds2 = pydicom.dcmread(str(path), stop_before_pixels=True, force=True)
+                forced_ok = True
+                forced_date = str(ds2.get("StudyDate", ""))
+            except Exception:
+                pass
+            hint = ""
+            if forced_ok:
+                hint = (
+                    f" -> READABLE with force=True (StudyDate={forced_date!r}); "
+                    "this file is likely missing the DICOM preamble/DICM header"
+                )
+            print(f"  [SKIP] {path}: {type(exc).__name__}: {exc}{hint}")
         return None
-    return str(ds.get("StudyDate", "")), str(ds.get("Modality", ""))
+    study_date, modality = str(ds.get("StudyDate", "")), str(ds.get("Modality", ""))
+    if debug:
+        print(f"  [OK]   {path}: StudyDate={study_date!r} Modality={modality!r}")
+    return study_date, modality
 
 
-def scan_images(images_root):
+def scan_images(images_root, debug=False):
     """rcode -> studydate -> {"count": n, "modalities": set()}"""
     studies = defaultdict(lambda: defaultdict(lambda: {"count": 0, "modalities": set()}))
-    for rcode_dir in sorted(p for p in images_root.iterdir() if p.is_dir()):
+    rcode_dirs = sorted(p for p in images_root.iterdir() if p.is_dir())
+    if debug:
+        print(f"images folder: found {len(rcode_dirs)} subfolders")
+        for d in rcode_dirs:
+            print(f"  rcode dir: {d.name!r}")
+    for rcode_dir in rcode_dirs:
         rcode = rcode_dir.name
+        if debug:
+            print(f"\nScanning images/{rcode}...")
         for path in rcode_dir.rglob("*"):
             if not path.is_file():
                 continue
-            info = read_dicom_study(path)
+            info = read_dicom_study(path, debug=debug)
             if info is None:
                 continue
             study_date, modality = info
@@ -58,28 +90,47 @@ def scan_images(images_root):
             bucket["count"] += 1
             if modality:
                 bucket["modalities"].add(modality)
+        if debug:
+            if studies.get(rcode):
+                for study_date, info in sorted(studies[rcode].items()):
+                    print(f"  -> study date {study_date!r}: {info['count']} file(s), modalities={sorted(info['modalities'])}")
+            else:
+                print("  -> no readable DICOM files found in this folder")
     return studies
 
 
-def scan_reports(reports_root):
+def scan_reports(reports_root, debug=False):
     """rcode -> list of (pdf_path, parsed_date_or_None)"""
     reports = defaultdict(list)
-    for rcode_dir in sorted(p for p in reports_root.iterdir() if p.is_dir()):
+    rcode_dirs = sorted(p for p in reports_root.iterdir() if p.is_dir())
+    if debug:
+        print(f"\nreports folder: found {len(rcode_dirs)} subfolders")
+        for d in rcode_dirs:
+            print(f"  rcode dir: {d.name!r}")
+    for rcode_dir in rcode_dirs:
         rcode = rcode_dir.name
+        if debug:
+            print(f"\nScanning reports/{rcode}...")
         for path in sorted(rcode_dir.rglob("*.pdf")):
             if not path.is_file():
                 continue
-            reports[rcode].append((path, parse_pdf_date(path.name)))
+            date = parse_pdf_date(path.name)
+            reports[rcode].append((path, date))
+            if debug:
+                print(f"  {path.name!r} -> parsed date {date!r}")
     return reports
 
 
 def main():
-    if len(sys.argv) < 3:
+    debug = "--debug" in sys.argv
+    args = [a for a in sys.argv[1:] if a != "--debug"]
+
+    if len(args) < 2:
         print(__doc__)
         sys.exit(1)
 
-    images_root = Path(sys.argv[1]).expanduser().resolve()
-    reports_root = Path(sys.argv[2]).expanduser().resolve()
+    images_root = Path(args[0]).expanduser().resolve()
+    reports_root = Path(args[1]).expanduser().resolve()
     if not images_root.is_dir():
         print(f"Not a folder: {images_root}")
         sys.exit(1)
@@ -87,14 +138,24 @@ def main():
         print(f"Not a folder: {reports_root}")
         sys.exit(1)
 
-    output = Path(sys.argv[3]) if len(sys.argv) > 3 else Path.cwd() / "match_report.xlsx"
+    output = Path(args[2]) if len(args) > 2 else Path.cwd() / "match_report.xlsx"
 
     print("Scanning DICOM images...")
-    studies = scan_images(images_root)
+    studies = scan_images(images_root, debug=debug)
     print("Scanning PDF reports...")
-    reports = scan_reports(reports_root)
+    reports = scan_reports(reports_root, debug=debug)
 
     all_rcodes = sorted(set(studies) | set(reports))
+
+    if debug:
+        print("\n--- R-code comparison ---")
+        only_images = set(studies) - set(reports)
+        only_reports = set(reports) - set(studies)
+        both = set(studies) & set(reports)
+        print(f"In both: {sorted(both)}")
+        print(f"Only in images: {sorted(only_images)}")
+        print(f"Only in reports: {sorted(only_reports)}")
+        print("--- end R-code comparison ---\n")
 
     wb = Workbook()
     ws = wb.active
