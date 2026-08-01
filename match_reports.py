@@ -168,18 +168,18 @@ def main():
                 candidate_pdfs = rcode_reports.get(study_date, []) if rcode_reports else []
                 if candidate_pdfs:
                     status = "Matched (folder + date)"
-                    pdf_names = "; ".join(p.name for p in candidate_pdfs)
+                    pdf_paths_str = "; ".join(str(p) for p in candidate_pdfs)
                     for p in candidate_pdfs:
                         matched_pdf_paths.add(p)
                         bucket["matched_pdfs"].add(p.name)
                 elif rcode_reports:
                     status = "Same folder, date unmatched"
-                    pdf_names = ""
+                    pdf_paths_str = ""
                 else:
                     status = "No PDF report found"
-                    pdf_names = ""
+                    pdf_paths_str = ""
 
-                writer.writerow([rcode, str(path), study_date, modality, pdf_names, status])
+                writer.writerow([rcode, str(path), study_date, modality, pdf_paths_str, status])
 
     print(f"Detail (per-image) report saved to: {detail_csv}")
 
