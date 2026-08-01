@@ -18,16 +18,23 @@ Matching is done in tiers, strongest first:
     Anything weaker than that is left for manual review rather than guessed.
 
 Produces two output files:
-    <output>.xlsx        - one row per study (R-code + date + modality):
-                            counts, which PDF(s) it matched, and any
-                            unmatched PDFs. Small - safe to eyeball in Excel.
-    <output>_detail.csv  - one row per individual DICOM file, with the exact
-                            PDF full path it was matched to (blank if none).
-                            This is the file-level audit trail. It's a CSV,
-                            not a second xlsx sheet, because Excel sheets cap
-                            at ~1,048,576 rows - a million-image run would
-                            blow past that - and CSV writes are streamed row
-                            by row instead of held in memory.
+    <output>.xlsx         - one row per study (R-code + date + modality):
+                             counts, which PDF(s) it matched, and any
+                             unmatched PDFs. Small - safe to eyeball in Excel.
+    <output>_detail.xlsx  - one row per individual DICOM file, with the exact
+                             PDF full path it was matched to (blank if none).
+                             This is the file-level audit trail, written with
+                             openpyxl's write-only/streaming mode to keep
+                             memory flat regardless of file count. NOTE: an
+                             Excel sheet caps at ~1,048,576 rows - a
+                             many-million-image run WILL exceed that and
+                             openpyxl will raise when it happens. If your
+                             real dataset is that large, ask for the CSV
+                             variant back (or a split-by-rcode xlsx) instead.
+
+    Modality is shown as a human-readable label (e.g. "MRI" instead of the
+    raw DICOM code "MR") in both files - matching logic still uses the raw
+    DICOM codes internally, this only affects what's displayed.
 
 Usage:
     python match_reports.py <images_folder> <reports_folder> [output.xlsx] [--debug]
@@ -39,7 +46,6 @@ Usage:
     whitespace/case differences) so a "should match" case can be diagnosed.
 """
 
-import csv
 import re
 import sys
 from collections import defaultdict
@@ -71,6 +77,28 @@ MODALITY_ALIASES = {
 MODALITY_RE = re.compile(
     r"(?<![A-Z0-9])(" + "|".join(re.escape(k) for k in MODALITY_ALIASES) + r")(?![A-Z0-9])"
 )
+
+# DICOM Modality code -> human-readable label, for display in the Excel
+# outputs only. Extend as you encounter more codes in the real data.
+MODALITY_DISPLAY_NAMES = {
+    "CT": "CT",
+    "MR": "MRI",
+    "US": "Ultrasound",
+    "CR": "X-Ray",
+    "DX": "X-Ray",
+    "MG": "Mammography",
+    "PT": "PET",
+    "NM": "Nuclear Medicine",
+    "XA": "Angiography",
+    "RF": "Fluoroscopy",
+    "SR": "Structured Report",
+}
+
+
+def display_modality(code):
+    if not code:
+        return code
+    return MODALITY_DISPLAY_NAMES.get(code, code)
 
 
 def parse_pdf_date(name):
@@ -169,7 +197,7 @@ def main():
         sys.exit(1)
 
     output_xlsx = Path(args[2]) if len(args) > 2 else Path.cwd() / "match_report.xlsx"
-    detail_csv = output_xlsx.with_name(output_xlsx.stem + "_detail.csv")
+    detail_xlsx = output_xlsx.with_name(output_xlsx.stem + "_detail.xlsx")
 
     print("Scanning PDF reports...")
     reports = scan_reports(reports_root, debug=debug)
@@ -189,48 +217,52 @@ def main():
     matched_pdf_paths = set()
     rcode_dirs = sorted(p for p in images_root.iterdir() if p.is_dir())
 
-    with open(detail_csv, "w", newline="", encoding="utf-8") as f:
-        writer = csv.writer(f)
-        writer.writerow([
-            "R-Code", "DICOM File", "DICOM Study Date", "Modality",
-            "Matched PDF File", "Match Status",
-        ])
+    detail_wb = Workbook(write_only=True)
+    detail_ws = detail_wb.create_sheet(title="Detail")
+    for column, width in zip("ABCDEF", (12, 60, 14, 12, 60, 40)):
+        detail_ws.column_dimensions[column].width = width
+    detail_ws.freeze_panes = "A2"
+    detail_ws.append([
+        "R-Code", "DICOM File", "DICOM Study Date", "Modality",
+        "Matched PDF File", "Match Status",
+    ])
 
-        for rcode_dir in rcode_dirs:
-            rcode = rcode_dir.name
-            rcode_reports = reports.get(rcode, [])
-            by_date_modality, by_date = build_indices(rcode_reports)
-            if debug:
-                print(f"\nScanning images/{rcode}...")
-            for path in rcode_dir.rglob("*"):
-                if not path.is_file():
-                    continue
-                info = read_dicom_study(path, debug=debug)
-                if info is None:
-                    continue
-                study_date, modality = info
+    for rcode_dir in rcode_dirs:
+        rcode = rcode_dir.name
+        rcode_reports = reports.get(rcode, [])
+        by_date_modality, by_date = build_indices(rcode_reports)
+        if debug:
+            print(f"\nScanning images/{rcode}...")
+        for path in rcode_dir.rglob("*"):
+            if not path.is_file():
+                continue
+            info = read_dicom_study(path, debug=debug)
+            if info is None:
+                continue
+            study_date, modality = info
 
-                if modality and (study_date, modality) in by_date_modality:
-                    matches = by_date_modality[(study_date, modality)]
-                    status = "Matched (folder + date + modality)"
-                elif study_date in by_date:
-                    matches = by_date[study_date]
-                    status = "Matched (folder + date, modality unconfirmed)"
-                else:
-                    matches = []
-                    status = "Same folder, date unmatched" if rcode_reports else "No PDF report found"
+            if modality and (study_date, modality) in by_date_modality:
+                matches = by_date_modality[(study_date, modality)]
+                status = "Matched (folder + date + modality)"
+            elif study_date in by_date:
+                matches = by_date[study_date]
+                status = "Matched (folder + date, modality unconfirmed)"
+            else:
+                matches = []
+                status = "Same folder, date unmatched" if rcode_reports else "No PDF report found"
 
-                bucket = summary[(rcode, study_date, modality)]
-                bucket["count"] += 1
+            bucket = summary[(rcode, study_date, modality)]
+            bucket["count"] += 1
 
-                pdf_paths_str = "; ".join(str(m["path"]) for m in matches)
-                for m in matches:
-                    matched_pdf_paths.add(m["path"])
-                    bucket["matched_pdfs"].add(str(m["path"]))
+            pdf_paths_str = "; ".join(str(m["path"]) for m in matches)
+            for m in matches:
+                matched_pdf_paths.add(m["path"])
+                bucket["matched_pdfs"].add(str(m["path"]))
 
-                writer.writerow([rcode, str(path), study_date, modality, pdf_paths_str, status])
+            detail_ws.append([rcode, str(path), study_date, display_modality(modality), pdf_paths_str, status])
 
-    print(f"Detail (per-image) report saved to: {detail_csv}")
+    detail_wb.save(detail_xlsx)
+    print(f"Detail (per-image) report saved to: {detail_xlsx}")
 
     wb = Workbook()
     ws = wb.active
@@ -244,7 +276,7 @@ def main():
     for (rcode, study_date, modality), info in sorted(summary.items()):
         rcode_reports = reports.get(rcode, [])
         others = ", ".join(
-            f"{e['date'] or 'unparsed'}/{e['modality'] or '?'}"
+            f"{e['date'] or 'unparsed'}/{display_modality(e['modality']) or '?'}"
             for e in rcode_reports
             if str(e["path"]) not in info["matched_pdfs"]
         )
@@ -258,7 +290,7 @@ def main():
             status = "No PDF report found"
             unmatched_images += 1
         ws.append([
-            rcode, study_date, modality, info["count"],
+            rcode, study_date, display_modality(modality), info["count"],
             ", ".join(sorted(info["matched_pdfs"])), status, others,
         ])
 
@@ -267,7 +299,7 @@ def main():
         for entry in sorted(entries, key=lambda e: (e["date"] or "", e["modality"] or "")):
             if entry["path"] not in matched_pdf_paths:
                 ws.append([
-                    rcode, entry["date"] or "", entry["modality"] or "", "",
+                    rcode, entry["date"] or "", display_modality(entry["modality"]) or "", "",
                     str(entry["path"]), "No DICOM images found", "",
                 ])
                 unmatched_pdf += 1
@@ -282,7 +314,7 @@ def main():
     print(f"DICOM studies with no PDF report: {unmatched_images}")
     print(f"PDF reports with no DICOM images: {unmatched_pdf}")
     print(f"Summary saved to: {output_xlsx}")
-    print(f"Detail saved to: {detail_csv}")
+    print(f"Detail saved to: {detail_xlsx}")
 
 
 if __name__ == "__main__":
