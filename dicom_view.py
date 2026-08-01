@@ -18,6 +18,11 @@ import numpy as np
 import pydicom
 from PIL import Image
 
+# pydicom truncates long text/byte values in str(ds) to "Array of N elements"
+# past this many chars (default 16) - raise it so full SR findings text and
+# other long strings print in full instead of being hidden.
+pydicom.dataelem.DataElement.maxBytesToDisplay = 100_000
+
 
 TAGS_TO_PRINT = [
     "Modality", "StudyDescription", "SeriesDescription", "BodyPartExamined",
@@ -65,9 +70,10 @@ def dump_sr_tree(ds, indent=0):
     for item in ds.get("ContentSequence", []):
         label, value_type, value = format_sr_item(item)
         prefix = "  " * (indent + 1)
-        line = f"{prefix}- {label or '(unlabeled)'}"
+        rel = item.get("RelationshipType", "")
+        line = f"{prefix}- [{rel}] {label or '(unlabeled)'}" if rel else f"{prefix}- {label or '(unlabeled)'}"
         if value_type:
-            line += f" [{value_type}]"
+            line += f" ({value_type})"
         if value:
             line += f": {value}"
         print(line)
@@ -76,15 +82,20 @@ def dump_sr_tree(ds, indent=0):
 
 def print_sr_contents(ds):
     """Print a DICOM Structured Report's content tree (it has no pixel data
-    to render - the report *is* this nested tree of text/coded findings)."""
+    to render - the report *is* this nested tree of text/coded findings),
+    followed by the complete raw dataset so nothing is left out."""
     title = ""
     if ds.get("ConceptNameCodeSequence"):
         title = ds.ConceptNameCodeSequence[0].get("CodeMeaning", "")
     print(f"  SR Document Title: {title or '(none)'}")
     print(f"  CompletionFlag: {ds.get('CompletionFlag', '')}  "
           f"VerificationFlag: {ds.get('VerificationFlag', '')}")
-    print("  Content:")
+    print("  Content (readable summary):")
     dump_sr_tree(ds)
+
+    print("\n  --- Full raw dataset (every tag pydicom recognizes, nested sequences included) ---")
+    for line in str(ds).splitlines():
+        print(f"  {line}")
 
 
 def normalize_pixel_array(arr):
