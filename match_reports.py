@@ -171,7 +171,7 @@ def main():
                     pdf_paths_str = "; ".join(str(p) for p in candidate_pdfs)
                     for p in candidate_pdfs:
                         matched_pdf_paths.add(p)
-                        bucket["matched_pdfs"].add(p.name)
+                        bucket["matched_pdfs"].add(str(p))
                 elif rcode_reports:
                     status = "Same folder, date unmatched"
                     pdf_paths_str = ""
@@ -214,7 +214,7 @@ def main():
         for date, pdf_list in sorted(by_date.items(), key=lambda kv: kv[0] or ""):
             for pdf_path in pdf_list:
                 if pdf_path not in matched_pdf_paths:
-                    ws.append([rcode, date or "", "", "", pdf_path.name, "No DICOM images found", ""])
+                    ws.append([rcode, date or "", "", "", str(pdf_path), "No DICOM images found", ""])
                     unmatched_pdf += 1
 
     for column, width in zip("ABCDEFG", (12, 14, 16, 14, 40, 32, 26)):
