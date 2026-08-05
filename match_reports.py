@@ -1,5 +1,5 @@
 """
-Match PDF reports to DICOM studies and record the exact file-level linkage.
+Match PDF reports to DICOM studies, writing one Excel result file per R-code.
 
 Expects two folder trees sharing the same subfolder naming (e.g. "R123"):
     images/R123/...   -> DICOM files (mixed in with other junk, e.g. viewer apps)
@@ -17,50 +17,75 @@ Matching is done in tiers, strongest first:
        parsed from the PDF filename or is missing from the DICOM tag.
     Anything weaker than that is left for manual review rather than guessed.
 
-Produces two output files:
-    <output>.xlsx         - one row per study (R-code + date + modality):
-                             counts, which PDF(s) it matched, and any
-                             unmatched PDFs. Small - safe to eyeball in Excel.
-    <output>_detail.xlsx  - one row per individual DICOM file, with the exact
-                             PDF full path it was matched to (blank if none).
-                             This is the file-level audit trail, written with
-                             openpyxl's write-only/streaming mode to keep
-                             memory flat regardless of file count. NOTE: an
-                             Excel sheet caps at ~1,048,576 rows - a
-                             many-million-image run WILL exceed that and
-                             openpyxl will raise when it happens. If your
-                             real dataset is that large, ask for the CSV
-                             variant back (or a split-by-rcode xlsx) instead.
+Output layout (all under a "results" folder next to the summary file):
+    results/R123-results.xlsx  - one file per R-code, written as soon as that
+                                 R-code finishes. This is the checkpoint: a run
+                                 that dies halfway keeps everything already done.
+    results/progress.log       - append-only timestamped log of every R-code
+                                 started/finished, with per-folder heartbeats
+                                 during long scans. `tail -f` it to watch a
+                                 multi-day run.
+    match_report.xlsx          - all per-R-code files concatenated, rebuilt at
+                                 the end of every run from whatever is in
+                                 results/ (so it stays complete across resumes).
+
+    Each row is one study (R-code + date + modality) with its DICOM file count
+    and matched PDF(s), plus trailing rows for PDFs that matched no images.
 
     Modality is shown as a human-readable label (e.g. "MRI" instead of the
-    raw DICOM code "MR") in both files - matching logic still uses the raw
-    DICOM codes internally, this only affects what's displayed.
+    raw DICOM code "MR") - matching logic still uses the raw DICOM codes
+    internally, this only affects what's displayed.
+
+Resuming:
+    Any R-code that already has results/<code>-results.xlsx is skipped. Just
+    re-run the same command after an interruption and it picks up where it
+    left off. Pass --force to recompute R-codes that already have a file.
 
 Usage:
-    python match_reports.py <images_folder> <reports_folder> [output.xlsx] [--debug] [--rcode CODE[,CODE...]]
-
-    --debug prints, for every file/folder involved, exactly why it was or
-    wasn't picked up: dcmread failures (with the exception message and
-    whether forcing the read would have worked), parsed PDF dates/modality,
-    and a side-by-side of R-code folder names (with repr() to expose hidden
-    whitespace/case differences) so a "should match" case can be diagnosed.
+    python match_reports.py <images_folder> <reports_folder> [output.xlsx]
+                            [--debug] [--force] [--rcode CODE[,CODE...]]
 
     --rcode restricts the whole run to one or more R-code subfolders instead
     of scanning everything under images_folder/reports_folder - e.g.
     --rcode R123 or --rcode R123,R456. Both root folders are still passed
     in full (so the shared naming convention still applies); every other
     subfolder is skipped entirely rather than just filtered out afterward.
+
+    --force re-scans R-codes that already have a results file (default is to
+    skip them, which is what makes an interrupted run resumable).
+
+    --debug prints, for every file/folder involved, exactly why it was or
+    wasn't picked up: dcmread failures (with the exception message and
+    whether forcing the read would have worked), parsed PDF dates/modality,
+    and a side-by-side of R-code folder names (with repr() to expose hidden
+    whitespace/case differences) so a "should match" case can be diagnosed.
 """
 
+import os
 import re
 import sys
+import time
 from collections import defaultdict
+from datetime import datetime
 from pathlib import Path
 
 import pydicom
-from openpyxl import Workbook
+from openpyxl import Workbook, load_workbook
 
 DATE_RE = re.compile(r"(\d{2})[-_.](\d{2})[-_.](\d{4})")
+
+# How often, in files examined, to emit a heartbeat line while scanning a
+# single R-code folder. Large folders otherwise look hung for hours.
+PROGRESS_EVERY = 2000
+
+SUMMARY_HEADER = [
+    "Code", "Study Date", "Modality", "DICOM File Count",
+    "Matched PDF File(s)", "Match Status",
+]
+SUMMARY_WIDTHS = (12, 14, 10, 16, 45, 40)
+
+# Characters that can't go in a filename, in case an R-code folder has one.
+UNSAFE_NAME_RE = re.compile(r'[\\/:*?"<>|]')
 
 # PDF-filename token (uppercased) -> standard DICOM Modality code.
 # Extend this as you find more variants in the real filenames.
@@ -104,11 +129,44 @@ MODALITY_DISPLAY_NAMES = {
     "SR": "Structured Report",
 }
 
+_log_fh = None
+
+
+def open_log(path):
+    """Append-mode log so successive (resumed) runs stack up in one place."""
+    global _log_fh
+    _log_fh = open(path, "a", encoding="utf-8")
+    _log_fh.write(f"\n===== run started {datetime.now():%Y-%m-%d %H:%M:%S} =====\n")
+    _log_fh.flush()
+
+
+def log(message):
+    line = f"[{datetime.now():%Y-%m-%d %H:%M:%S}] {message}"
+    print(line, flush=True)
+    if _log_fh is not None:
+        _log_fh.write(line + "\n")
+        _log_fh.flush()
+
+
+def format_duration(seconds):
+    seconds = int(seconds)
+    hours, rest = divmod(seconds, 3600)
+    minutes, secs = divmod(rest, 60)
+    if hours:
+        return f"{hours}h{minutes:02d}m{secs:02d}s"
+    if minutes:
+        return f"{minutes}m{secs:02d}s"
+    return f"{secs}s"
+
 
 def display_modality(code):
     if not code:
         return code
     return MODALITY_DISPLAY_NAMES.get(code.strip().upper(), code)
+
+
+def result_path(results_dir, rcode):
+    return results_dir / f"{UNSAFE_NAME_RE.sub('_', rcode)}-results.xlsx"
 
 
 def parse_pdf_date(name):
@@ -153,27 +211,18 @@ def read_dicom_study(path, debug=False):
     return study_date, modality
 
 
-def scan_reports(reports_root, debug=False, rcode_filter=None):
-    """rcode -> list of {"path", "date", "modality"}"""
-    reports = defaultdict(list)
-    rcode_dirs = list_rcode_dirs(reports_root, rcode_filter)
-    if debug:
-        print(f"reports folder: found {len(rcode_dirs)} subfolders")
-        for d in rcode_dirs:
-            print(f"  rcode dir: {d.name!r}")
-    for rcode_dir in rcode_dirs:
-        rcode = rcode_dir.name
+def scan_reports_dir(rcode_dir, debug=False):
+    """One R-code's reports folder -> list of {"path", "date", "modality"}."""
+    entries = []
+    for path in sorted(rcode_dir.rglob("*.pdf")):
+        if not path.is_file():
+            continue
+        date = parse_pdf_date(path.name)
+        modality = parse_pdf_modality(path.name)
+        entries.append({"path": path, "date": date, "modality": modality})
         if debug:
-            print(f"\nScanning reports/{rcode}...")
-        for path in sorted(rcode_dir.rglob("*.pdf")):
-            if not path.is_file():
-                continue
-            date = parse_pdf_date(path.name)
-            modality = parse_pdf_modality(path.name)
-            reports[rcode].append({"path": path, "date": date, "modality": modality})
-            if debug:
-                print(f"  {path.name!r} -> date={date!r} modality={modality!r}")
-    return reports
+            print(f"  {path.name!r} -> date={date!r} modality={modality!r}")
+    return entries
 
 
 def build_indices(rcode_reports):
@@ -189,14 +238,140 @@ def build_indices(rcode_reports):
     return by_date_modality, by_date
 
 
+def process_rcode(rcode, images_dir, reports_dir, debug=False):
+    """Scan one R-code end to end. Returns (rows, stats)."""
+    started = time.time()
+    rcode_reports = scan_reports_dir(reports_dir, debug=debug) if reports_dir else []
+    by_date_modality, by_date = build_indices(rcode_reports)
+
+    # (study_date, modality) -> {"count", "matched_pdfs"}
+    summary = defaultdict(lambda: {"count": 0, "matched_pdfs": set()})
+    matched_pdf_paths = set()
+    files_seen = dicom_seen = 0
+
+    if images_dir is not None:
+        for path in images_dir.rglob("*"):
+            if not path.is_file():
+                continue
+            files_seen += 1
+            if files_seen % PROGRESS_EVERY == 0:
+                elapsed = time.time() - started
+                rate = files_seen / elapsed if elapsed else 0
+                log(
+                    f"    {rcode}: {files_seen:,} files examined, "
+                    f"{dicom_seen:,} DICOM, {format_duration(elapsed)} elapsed "
+                    f"({rate:,.0f} files/s)"
+                )
+            info = read_dicom_study(path, debug=debug)
+            if info is None:
+                continue
+            dicom_seen += 1
+            study_date, modality = info
+
+            if modality and (study_date, modality) in by_date_modality:
+                matches = by_date_modality[(study_date, modality)]
+            elif study_date in by_date:
+                matches = by_date[study_date]
+            else:
+                matches = []
+
+            bucket = summary[(study_date, modality)]
+            bucket["count"] += 1
+            for m in matches:
+                matched_pdf_paths.add(m["path"])
+                bucket["matched_pdfs"].add(str(m["path"]))
+
+    rows = []
+    matched = ambiguous = unmatched_images = 0
+    for (study_date, modality), info in sorted(summary.items()):
+        if info["matched_pdfs"]:
+            status = "Matched"
+            matched += 1
+        elif rcode_reports:
+            status = "Same folder, no date/modality match - review manually"
+            ambiguous += 1
+        else:
+            status = "No PDF report found"
+            unmatched_images += 1
+        rows.append([
+            rcode, study_date, display_modality(modality), info["count"],
+            ", ".join(sorted(info["matched_pdfs"])), status,
+        ])
+
+    unmatched_pdf = 0
+    for entry in sorted(rcode_reports, key=lambda e: (e["date"] or "", e["modality"] or "")):
+        if entry["path"] not in matched_pdf_paths:
+            rows.append([
+                rcode, entry["date"] or "", display_modality(entry["modality"]) or "", "",
+                str(entry["path"]), "No DICOM images found",
+            ])
+            unmatched_pdf += 1
+
+    stats = {
+        "files_seen": files_seen,
+        "dicom_seen": dicom_seen,
+        "pdfs": len(rcode_reports),
+        "matched": matched,
+        "ambiguous": ambiguous,
+        "unmatched_images": unmatched_images,
+        "unmatched_pdf": unmatched_pdf,
+        "elapsed": time.time() - started,
+    }
+    return rows, stats
+
+
+def write_summary_sheet(path, rows, title="Summary"):
+    """Write rows to a fresh workbook via a temp file, then swap it in.
+
+    The swap matters: a half-written results file would otherwise look
+    "done" to the next resumed run and get skipped.
+    """
+    wb = Workbook()
+    ws = wb.active
+    ws.title = title
+    ws.append(SUMMARY_HEADER)
+    for row in rows:
+        ws.append(row)
+    for column, width in zip("ABCDEF", SUMMARY_WIDTHS):
+        ws.column_dimensions[column].width = width
+    ws.freeze_panes = "A2"
+    tmp = path.with_suffix(path.suffix + ".tmp")
+    wb.save(tmp)
+    os.replace(tmp, path)
+
+
+def read_result_rows(path):
+    """Read back one per-R-code results file, minus its header row."""
+    wb = load_workbook(path, read_only=True, data_only=True)
+    try:
+        ws = wb.active
+        return [list(row) for row in ws.iter_rows(min_row=2, values_only=True)]
+    finally:
+        wb.close()
+
+
+def combine_results(results_dir, output_xlsx):
+    """Rebuild the all-codes summary from every per-R-code file on disk."""
+    rows = []
+    files = sorted(results_dir.glob("*-results.xlsx"))
+    for path in files:
+        try:
+            rows.extend(read_result_rows(path))
+        except Exception as exc:
+            log(f"  WARNING: could not read {path.name} for the combined summary: {exc}")
+    write_summary_sheet(output_xlsx, rows)
+    return len(files), len(rows)
+
+
 def parse_args(argv):
     debug = "--debug" in argv
+    force = "--force" in argv
     rcode_filter = None
     positional = []
     i = 0
     while i < len(argv):
         a = argv[i]
-        if a == "--debug":
+        if a in ("--debug", "--force"):
             i += 1
         elif a == "--rcode":
             if i + 1 >= len(argv):
@@ -207,7 +382,7 @@ def parse_args(argv):
         else:
             positional.append(a)
             i += 1
-    return positional, debug, rcode_filter
+    return positional, debug, force, rcode_filter
 
 
 def list_rcode_dirs(root, rcode_filter):
@@ -218,7 +393,7 @@ def list_rcode_dirs(root, rcode_filter):
 
 
 def main():
-    args, debug, rcode_filter = parse_args(sys.argv[1:])
+    args, debug, force, rcode_filter = parse_args(sys.argv[1:])
 
     if len(args) < 2:
         print(__doc__)
@@ -234,122 +409,72 @@ def main():
         sys.exit(1)
 
     output_xlsx = Path(args[2]) if len(args) > 2 else Path.cwd() / "match_report.xlsx"
-    detail_xlsx = output_xlsx.with_name(output_xlsx.stem + "_detail.xlsx")
+    results_dir = output_xlsx.parent / "results"
+    results_dir.mkdir(parents=True, exist_ok=True)
+    open_log(results_dir / "progress.log")
 
+    image_dirs = {p.name: p for p in list_rcode_dirs(images_root, rcode_filter)}
+    report_dirs = {p.name: p for p in list_rcode_dirs(reports_root, rcode_filter)}
+    rcodes = sorted(set(image_dirs) | set(report_dirs))
+
+    log(f"Images:  {images_root}")
+    log(f"Reports: {reports_root}")
+    log(f"Results: {results_dir}")
     if rcode_filter is not None:
-        print(f"Restricting scan to R-code(s): {sorted(rcode_filter)}")
-
-    print("Scanning PDF reports...")
-    reports = scan_reports(reports_root, debug=debug, rcode_filter=rcode_filter)
+        log(f"Restricting scan to R-code(s): {sorted(rcode_filter)}")
 
     if debug:
         print("\n--- R-code comparison ---")
-        image_rcodes = {p.name for p in list_rcode_dirs(images_root, rcode_filter)}
-        report_rcodes = set(reports)
-        print(f"In both: {sorted(image_rcodes & report_rcodes)}")
-        print(f"Only in images: {sorted(image_rcodes - report_rcodes)}")
-        print(f"Only in reports: {sorted(report_rcodes - image_rcodes)}")
+        print(f"In both: {sorted(set(image_dirs) & set(report_dirs))}")
+        print(f"Only in images: {sorted(set(image_dirs) - set(report_dirs))}")
+        print(f"Only in reports: {sorted(set(report_dirs) - set(image_dirs))}")
+        for name in rcodes:
+            print(f"  rcode: {name!r}")
         print("--- end R-code comparison ---\n")
 
-    print("Scanning DICOM images and writing per-file detail...")
-    # (rcode, study_date, modality) -> {"count", "matched_pdfs"}
-    summary = defaultdict(lambda: {"count": 0, "matched_pdfs": set()})
-    matched_pdf_paths = set()
-    rcode_dirs = list_rcode_dirs(images_root, rcode_filter)
+    todo = [c for c in rcodes if force or not result_path(results_dir, c).exists()]
+    already_done = len(rcodes) - len(todo)
+    log(f"{len(rcodes)} R-code folder(s) in scope; {already_done} already have results, {len(todo)} to do")
+    if already_done and not force:
+        log("(pass --force to re-scan the ones that already have a results file)")
 
-    detail_wb = Workbook(write_only=True)
-    detail_ws = detail_wb.create_sheet(title="Detail")
-    for column, width in zip("ABCDEF", (12, 60, 14, 12, 60, 40)):
-        detail_ws.column_dimensions[column].width = width
-    detail_ws.freeze_panes = "A2"
-    detail_ws.append([
-        "Code", "DICOM File", "DICOM Study Date", "Modality",
-        "Matched PDF File", "Match Status",
-    ])
+    run_started = time.time()
+    totals = defaultdict(int)
+    for index, rcode in enumerate(todo, start=1):
+        remaining = len(todo) - index
+        log(f"[{index}/{len(todo)}] {rcode}: starting ({remaining} folder(s) left after this)")
+        rows, stats = process_rcode(
+            rcode, image_dirs.get(rcode), report_dirs.get(rcode), debug=debug
+        )
+        out = result_path(results_dir, rcode)
+        write_summary_sheet(out, rows)
+        for key, value in stats.items():
+            totals[key] += value
+        log(
+            f"[{index}/{len(todo)}] {rcode}: done in {format_duration(stats['elapsed'])} - "
+            f"{stats['files_seen']:,} files ({stats['dicom_seen']:,} DICOM), "
+            f"{stats['pdfs']} PDF(s), {stats['matched']} matched study bucket(s), "
+            f"{stats['ambiguous']} needing review, {stats['unmatched_pdf']} unmatched PDF(s) "
+            f"-> {out.name}"
+        )
+        elapsed = time.time() - run_started
+        if remaining:
+            eta = elapsed / index * remaining
+            log(f"    run elapsed {format_duration(elapsed)}, rough ETA {format_duration(eta)} for the rest")
 
-    for rcode_dir in rcode_dirs:
-        rcode = rcode_dir.name
-        rcode_reports = reports.get(rcode, [])
-        by_date_modality, by_date = build_indices(rcode_reports)
-        if debug:
-            print(f"\nScanning images/{rcode}...")
-        for path in rcode_dir.rglob("*"):
-            if not path.is_file():
-                continue
-            info = read_dicom_study(path, debug=debug)
-            if info is None:
-                continue
-            study_date, modality = info
+    log("Rebuilding combined summary from results/ ...")
+    file_count, row_count = combine_results(results_dir, output_xlsx)
 
-            if modality and (study_date, modality) in by_date_modality:
-                matches = by_date_modality[(study_date, modality)]
-                status = "Matched (folder + date + modality)"
-            elif study_date in by_date:
-                matches = by_date[study_date]
-                status = "Matched (folder + date, modality unconfirmed)"
-            else:
-                matches = []
-                status = "Same folder, date unmatched" if rcode_reports else "No PDF report found"
-
-            bucket = summary[(rcode, study_date, modality)]
-            bucket["count"] += 1
-
-            pdf_paths_str = "; ".join(str(m["path"]) for m in matches)
-            for m in matches:
-                matched_pdf_paths.add(m["path"])
-                bucket["matched_pdfs"].add(str(m["path"]))
-
-            detail_ws.append([rcode, str(path), study_date, display_modality(modality), pdf_paths_str, status])
-
-    detail_wb.save(detail_xlsx)
-    print(f"Detail (per-image) report saved to: {detail_xlsx}")
-
-    wb = Workbook()
-    ws = wb.active
-    ws.title = "Summary"
-    ws.append([
-        "Code", "Study Date", "Modality", "DICOM File Count",
-        "Matched PDF File(s)", "Match Status",
-    ])
-
-    matched = ambiguous = unmatched_images = 0
-    for (rcode, study_date, modality), info in sorted(summary.items()):
-        rcode_reports = reports.get(rcode, [])
-        if info["matched_pdfs"]:
-            status = "Matched"
-            matched += 1
-        elif rcode_reports:
-            status = "Same folder, no date/modality match - review manually"
-            ambiguous += 1
-        else:
-            status = "No PDF report found"
-            unmatched_images += 1
-        ws.append([
-            rcode, study_date, display_modality(modality), info["count"],
-            ", ".join(sorted(info["matched_pdfs"])), status,
-        ])
-
-    unmatched_pdf = 0
-    for rcode, entries in sorted(reports.items()):
-        for entry in sorted(entries, key=lambda e: (e["date"] or "", e["modality"] or "")):
-            if entry["path"] not in matched_pdf_paths:
-                ws.append([
-                    rcode, entry["date"] or "", display_modality(entry["modality"]) or "", "",
-                    str(entry["path"]), "No DICOM images found",
-                ])
-                unmatched_pdf += 1
-
-    for column, width in zip("ABCDEF", (12, 14, 10, 16, 45, 40)):
-        ws.column_dimensions[column].width = width
-    ws.freeze_panes = "A2"
-    wb.save(output_xlsx)
-
-    print(f"\nMatched study buckets: {matched}")
-    print(f"Same folder, no date/modality match (needs review): {ambiguous}")
-    print(f"DICOM studies with no PDF report: {unmatched_images}")
-    print(f"PDF reports with no DICOM images: {unmatched_pdf}")
-    print(f"Summary saved to: {output_xlsx}")
-    print(f"Detail saved to: {detail_xlsx}")
+    log("")
+    log(f"R-codes scanned this run: {len(todo)} (skipped as already done: {already_done})")
+    log(f"Files examined: {totals['files_seen']:,} ({totals['dicom_seen']:,} readable DICOM)")
+    log(f"Matched study buckets: {totals['matched']}")
+    log(f"Same folder, no date/modality match (needs review): {totals['ambiguous']}")
+    log(f"DICOM studies with no PDF report: {totals['unmatched_images']}")
+    log(f"PDF reports with no DICOM images: {totals['unmatched_pdf']}")
+    log(f"Total run time: {format_duration(time.time() - run_started)}")
+    log(f"Per-R-code results: {results_dir}")
+    log(f"Combined summary ({row_count:,} rows from {file_count} R-code file(s)): {output_xlsx}")
 
 
 if __name__ == "__main__":
