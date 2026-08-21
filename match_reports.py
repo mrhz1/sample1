@@ -1,3 +1,48 @@
+"""
+Match DICOM image studies (images_root/<R-code>/...) against PDF reports
+(reports_root/<R-code>/...) by study date + modality, and write one Excel
+results file per R-code plus a combined summary.
+
+Layout expected:
+    <images_root>/AA001/...       <- DICOM files, any extension/none
+    <reports_root>/AA001/...      <- PDF reports named like AA001-CT-01-15-2020.pdf
+
+Usage:
+    python match_reports.py <images_root> <reports_root> [output.xlsx] [options]
+
+Positional args:
+    images_root    Folder containing one subfolder per R-code with DICOM files
+    reports_root   Folder containing one subfolder per R-code with PDF reports
+    output.xlsx    Combined summary path (default: ./match_report.xlsx)
+
+Options:
+    --workers N    Run N R-codes in parallel (one worker process per R-code).
+                    Default 1 (serial, original behavior). Safe to raise since
+                    every R-code reads/writes independently of the others.
+    --rcode LIST   Only process these R-codes, comma-separated
+                    (e.g. --rcode AA001,AA002). Default: all R-codes found.
+    --force        Reprocess R-codes even if a <code>-results.xlsx already
+                    exists (default: skip codes already done, for resuming).
+    --debug        Verbose per-file parse/skip logging to stdout.
+
+Examples:
+    # Basic run, serial
+    python match_reports.py "/mnt/data/images" "/mnt/data/reports" match_report.xlsx
+
+    # Parallel across R-codes, 8 workers
+    python match_reports.py "/mnt/data/images" "/mnt/data/reports" match_report.xlsx --workers 8
+
+    # Resume an interrupted run (already-done R-codes are skipped automatically)
+    python match_reports.py "/mnt/data/images" "/mnt/data/reports" match_report.xlsx --workers 8
+
+    # Reprocess only specific R-codes, forcing even if already done
+    python match_reports.py "/mnt/data/images" "/mnt/data/reports" match_report.xlsx --rcode AA001,AA002 --force
+
+Per-R-code results land in <output.xlsx's folder>/results/<code>-results.xlsx;
+progress/heartbeat logging is appended to results/progress.log on every run.
+"""
+
+import concurrent.futures
 import os
 import re
 import sys
@@ -81,6 +126,14 @@ def open_log(path):
     _log_fh = open(path, "a", encoding="utf-8")
     _log_fh.write(f"\n===== run started {datetime.now():%Y-%m-%d %H:%M:%S} =====\n")
     _log_fh.flush()
+
+
+def _init_worker(log_path):
+    """ProcessPoolExecutor initializer: give each worker process its own
+    handle to the same append-mode log file (small writes are atomic under
+    O_APPEND, so interleaved lines from multiple workers don't corrupt)."""
+    global _log_fh
+    _log_fh = open(log_path, "a", encoding="utf-8")
 
 
 def log(message):
@@ -326,6 +379,7 @@ def parse_args(argv):
     debug = "--debug" in argv
     force = "--force" in argv
     rcode_filter = None
+    workers = 1
     positional = []
     i = 0
     while i < len(argv):
@@ -340,10 +394,23 @@ def parse_args(argv):
                 sys.exit(1)
             rcode_filter = {c.strip() for c in argv[i + 1].split(",") if c.strip()}
             i += 2
+        elif a == "--workers":
+            if i + 1 >= len(argv):
+                print("--workers requires a value, e.g. --workers 4")
+                sys.exit(1)
+            try:
+                workers = int(argv[i + 1])
+            except ValueError:
+                print(f"--workers value must be an integer, got {argv[i + 1]!r}")
+                sys.exit(1)
+            if workers < 1:
+                print("--workers must be >= 1")
+                sys.exit(1)
+            i += 2
         else:
             positional.append(a)
             i += 1
-    return positional, debug, force, rcode_filter
+    return positional, debug, force, rcode_filter, workers
 
 
 def list_rcode_dirs(root, rcode_filter):
@@ -354,7 +421,7 @@ def list_rcode_dirs(root, rcode_filter):
 
 
 def main():
-    args, debug, force, rcode_filter = parse_args(sys.argv[1:])
+    args, debug, force, rcode_filter, workers = parse_args(sys.argv[1:])
 
     if len(args) < 2:
         print(__doc__)
@@ -403,31 +470,73 @@ def main():
 
     run_started = time.time()
     totals = defaultdict(int)
-    for index, rcode in enumerate(todo, start=1):
-        remaining = len(todo) - index
-        log(
-            f"[{index}/{len(todo)}] {rcode}: starting ({remaining} folder(s) left after this)"
-        )
-        rows, stats = process_rcode(
-            rcode, image_dirs.get(rcode), report_dirs.get(rcode), debug=debug
-        )
-        out = result_path(results_dir, rcode)
-        write_summary_sheet(out, rows)
-        for key, value in stats.items():
-            totals[key] += value
-        log(
-            f"[{index}/{len(todo)}] {rcode}: done in {format_duration(stats['elapsed'])} - "
-            f"{stats['files_seen']:,} files ({stats['dicom_seen']:,} DICOM), "
-            f"{stats['pdfs']} PDF(s), {stats['matched']} matched study bucket(s), "
-            f"{stats['ambiguous']} needing review, {stats['unmatched_pdf']} unmatched PDF(s) "
-            f"-> {out.name}"
-        )
-        elapsed = time.time() - run_started
-        if remaining:
-            eta = elapsed / index * remaining
+
+    if workers == 1:
+        for index, rcode in enumerate(todo, start=1):
+            remaining = len(todo) - index
             log(
-                f"    run elapsed {format_duration(elapsed)}, rough ETA {format_duration(eta)} for the rest"
+                f"[{index}/{len(todo)}] {rcode}: starting ({remaining} folder(s) left after this)"
             )
+            rows, stats = process_rcode(
+                rcode, image_dirs.get(rcode), report_dirs.get(rcode), debug=debug
+            )
+            out = result_path(results_dir, rcode)
+            write_summary_sheet(out, rows)
+            for key, value in stats.items():
+                totals[key] += value
+            log(
+                f"[{index}/{len(todo)}] {rcode}: done in {format_duration(stats['elapsed'])} - "
+                f"{stats['files_seen']:,} files ({stats['dicom_seen']:,} DICOM), "
+                f"{stats['pdfs']} PDF(s), {stats['matched']} matched study bucket(s), "
+                f"{stats['ambiguous']} needing review, {stats['unmatched_pdf']} unmatched PDF(s) "
+                f"-> {out.name}"
+            )
+            elapsed = time.time() - run_started
+            if remaining:
+                eta = elapsed / index * remaining
+                log(
+                    f"    run elapsed {format_duration(elapsed)}, rough ETA {format_duration(eta)} for the rest"
+                )
+    else:
+        log(f"Running with {workers} parallel workers, one R-code folder per worker")
+        completed = 0
+        with concurrent.futures.ProcessPoolExecutor(
+            max_workers=workers,
+            initializer=_init_worker,
+            initargs=(results_dir / "progress.log",),
+        ) as pool:
+            futures = {
+                pool.submit(
+                    process_rcode, rcode, image_dirs.get(rcode), report_dirs.get(rcode), debug
+                ): rcode
+                for rcode in todo
+            }
+            for future in concurrent.futures.as_completed(futures):
+                rcode = futures[future]
+                completed += 1
+                remaining = len(todo) - completed
+                try:
+                    rows, stats = future.result()
+                except Exception as exc:
+                    log(f"[{completed}/{len(todo)}] {rcode}: FAILED: {type(exc).__name__}: {exc}")
+                    continue
+                out = result_path(results_dir, rcode)
+                write_summary_sheet(out, rows)
+                for key, value in stats.items():
+                    totals[key] += value
+                log(
+                    f"[{completed}/{len(todo)}] {rcode}: done in {format_duration(stats['elapsed'])} - "
+                    f"{stats['files_seen']:,} files ({stats['dicom_seen']:,} DICOM), "
+                    f"{stats['pdfs']} PDF(s), {stats['matched']} matched study bucket(s), "
+                    f"{stats['ambiguous']} needing review, {stats['unmatched_pdf']} unmatched PDF(s) "
+                    f"-> {out.name}"
+                )
+                elapsed = time.time() - run_started
+                if remaining:
+                    eta = elapsed / completed * remaining
+                    log(
+                        f"    run elapsed {format_duration(elapsed)}, rough ETA {format_duration(eta)} for the rest"
+                    )
 
     log("Rebuilding combined summary from results/ ...")
     file_count, row_count = combine_results(results_dir, output_xlsx)
