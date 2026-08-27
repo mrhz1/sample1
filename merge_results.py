@@ -37,6 +37,10 @@ SUMMARY_HEADER = [
     "Match Status",
 ]
 SUMMARY_WIDTHS = (12, 14, 10, 16, 45, 40)
+# The stats block at the bottom of a sheet needs a roomier first column than
+# the Code column does, so the data sheet gets a widened column A.
+ALL_DATA_WIDTHS = (26,) + SUMMARY_WIDTHS[1:]
+TOTALS_WIDTHS = (52, 14, 12, 14, 16, 19, 20)
 
 MATCHED_STATUS = "Matched"
 NO_DICOM_STATUS = "No DICOM images found"
@@ -97,6 +101,7 @@ def tally(rows):
     statuses = Counter()
     per_modality = defaultdict(
         lambda: {
+            "rows": 0,
             "studies": 0,
             "dicom": 0,
             "dicom_matched": 0,
@@ -112,6 +117,7 @@ def tally(rows):
         statuses[status or "(blank)"] += 1
 
         bucket = per_modality[modality]
+        bucket["rows"] += 1
         bucket["dicom"] += count
         totals["dicom_total"] += count
 
@@ -133,6 +139,80 @@ def tally(rows):
     return totals, statuses, per_modality
 
 
+def stat_lines(totals, file_count):
+    """The overall numbers, in one place so the terminal and the Excel
+    summary block can never drift apart."""
+    return [
+        ("files merged", file_count),
+        ("codes", totals["codes"]),
+        ("rows", totals["rows"]),
+        ("DICOM files total", totals["dicom_total"]),
+        ("DICOM files matched", totals["dicom_matched"]),
+        ("DICOM files not matched", totals["dicom_unmatched"]),
+        ("studies matched", totals["studies_matched"]),
+        ("studies not matched", totals["studies_unmatched"]),
+        ("PDFs with no DICOM", totals["pdf_only_rows"]),
+    ]
+
+
+MODALITY_COLUMNS = [
+    "Modality",
+    "Found (rows)",
+    "Studies",
+    "DICOM files",
+    "DICOM matched",
+    "DICOM not matched",
+    "PDF only (no DICOM)",
+]
+
+
+def modality_lines(per_modality):
+    """Per-modality totals across every code - Echo, CT, MRI and the rest."""
+    out = []
+    for modality in sorted(per_modality):
+        b = per_modality[modality]
+        out.append(
+            [
+                modality,
+                b["rows"],
+                b["studies"],
+                b["dicom"],
+                b["dicom_matched"],
+                b["dicom_unmatched"],
+                b["pdf_only"],
+            ]
+        )
+    return out
+
+
+def append_stats_block(ws, totals, statuses, per_modality, file_count):
+    """Drop the same numbers the terminal prints at the bottom of a sheet."""
+
+    def heading(text):
+        ws.append([])
+        ws.append([text])
+        ws.cell(row=ws.max_row, column=1).font = BOLD
+
+    def header_row(labels):
+        ws.append(labels)
+        for cell in ws[ws.max_row]:
+            cell.font = BOLD
+
+    heading("SUMMARY")
+    for label, value in stat_lines(totals, file_count):
+        ws.append([label, value])
+
+    heading("BY MATCH STATUS")
+    header_row(["Status", "Rows"])
+    for status, count in statuses.most_common():
+        ws.append([status, count])
+
+    heading("BY MODALITY (all codes)")
+    header_row(MODALITY_COLUMNS)
+    for line in modality_lines(per_modality):
+        ws.append(line)
+
+
 def write_master(path, rows, file_count):
     """Write the master workbook via a temp file, then swap it in."""
     totals, statuses, per_modality = tally(rows)
@@ -145,72 +225,24 @@ def write_master(path, rows, file_count):
         cell.font = BOLD
     for row in rows:
         ws.append(row)
-    for column, width in zip("ABCDEF", SUMMARY_WIDTHS):
+    for column, width in zip("ABCDEFG", ALL_DATA_WIDTHS):
         ws.column_dimensions[column].width = width
     ws.freeze_panes = "A2"
 
+    # Same numbers, twice: at the bottom of the data sheet (scroll to the
+    # end and they're right there) and on their own sheet.
+    append_stats_block(ws, totals, statuses, per_modality, file_count)
+
     ts = wb.create_sheet("Totals")
-    ts.column_dimensions["A"].width = 42
-    ts.column_dimensions["B"].width = 14
-    ts.column_dimensions["C"].width = 14
-    ts.column_dimensions["D"].width = 16
-
-    def section(title):
-        ts.append([])
-        ts.append([title])
-        ts.cell(row=ts.max_row, column=1).font = BOLD
-
-    ts.append(["Overall"])
-    ts.cell(row=1, column=1).font = BOLD
-    ts.append(["Result files merged", file_count])
-    ts.append(["Codes", totals["codes"]])
-    ts.append(["Rows", totals["rows"]])
-    ts.append(["DICOM files total", totals["dicom_total"]])
-    ts.append(["DICOM files matched", totals["dicom_matched"]])
-    ts.append(["DICOM files not matched", totals["dicom_unmatched"]])
-    ts.append(["Studies matched", totals["studies_matched"]])
-    ts.append(["Studies not matched", totals["studies_unmatched"]])
-    ts.append(["PDF reports with no DICOM", totals["pdf_only_rows"]])
-
-    section("By match status")
-    ts.append(["Status", "Rows"])
-    for cell in ts[ts.max_row]:
-        cell.font = BOLD
-    for status, count in statuses.most_common():
-        ts.append([status, count])
-
-    section("By modality")
-    ts.append(
-        [
-            "Modality",
-            "Studies",
-            "DICOM files",
-            "DICOM matched",
-            "DICOM not matched",
-            "PDF only (no DICOM)",
-        ]
-    )
-    for cell in ts[ts.max_row]:
-        cell.font = BOLD
-    ts.column_dimensions["E"].width = 18
-    ts.column_dimensions["F"].width = 20
-    for modality in sorted(per_modality):
-        b = per_modality[modality]
-        ts.append(
-            [
-                modality,
-                b["studies"],
-                b["dicom"],
-                b["dicom_matched"],
-                b["dicom_unmatched"],
-                b["pdf_only"],
-            ]
-        )
+    for column, width in zip("ABCDEFG", TOTALS_WIDTHS):
+        ts.column_dimensions[column].width = width
+    append_stats_block(ts, totals, statuses, per_modality, file_count)
+    ts.delete_rows(1)  # the block opens with a spacer row; not needed here
 
     tmp = path.with_suffix(path.suffix + ".tmp")
     wb.save(tmp)
     os.replace(tmp, path)
-    return totals
+    return totals, per_modality
 
 
 def main(argv):
@@ -235,19 +267,25 @@ def main(argv):
         print("Nothing to merge.")
         return 1
 
-    totals = write_master(output_xlsx, rows, file_count)
+    totals, per_modality = write_master(output_xlsx, rows, file_count)
 
     print("")
     print(f"Master file: {output_xlsx}")
-    print(f"  files merged            {file_count:,}")
-    print(f"  codes                   {totals['codes']:,}")
-    print(f"  rows                    {totals['rows']:,}")
-    print(f"  DICOM files total       {totals['dicom_total']:,}")
-    print(f"  DICOM files matched     {totals['dicom_matched']:,}")
-    print(f"  DICOM files not matched {totals['dicom_unmatched']:,}")
-    print(f"  studies matched         {totals['studies_matched']:,}")
-    print(f"  studies not matched     {totals['studies_unmatched']:,}")
-    print(f"  PDFs with no DICOM      {totals['pdf_only_rows']:,}")
+    for label, value in stat_lines(totals, file_count):
+        print(f"  {label:<24}{value:,}")
+    print("")
+    print("  By modality (all codes):")
+    width = max([len(m) for m in per_modality] + [8])
+    print(
+        f"    {'modality':<{width}}  {'found':>7}{'studies':>9}{'dicom':>9}"
+        f"{'matched':>9}{'unmatched':>11}{'pdf only':>10}"
+    )
+    for line in modality_lines(per_modality):
+        modality, found, studies, dicom, matched, unmatched, pdf_only = line
+        print(
+            f"    {modality:<{width}}  {found:>7,}{studies:>9,}{dicom:>9,}"
+            f"{matched:>9,}{unmatched:>11,}{pdf_only:>10,}"
+        )
     return 0
 
 
