@@ -1,62 +1,44 @@
 """
-Match DICOM image studies (images_root/<code folder>/...) against PDF reports
-(reports_root/<code folder>/...) by study date + modality, and write one Excel
-results file per code plus a combined summary.
+Match DICOM image studies (images_root/<R-code>/...) against PDF reports
+(reports_root/<R-code>/...) by study date + modality, and write one Excel
+results file per R-code plus a combined summary.
 
 Layout expected:
-    <images_root>/AVSD0001 base date/...   <- DICOM files, any extension/none
-    <reports_root>/AVSD0001 follow up/...  <- PDF reports
-
-Folder names on either side may carry extra text around the code
-("AVSD0001", "AVSD0001 base date", "AVSD_0001 follow-up"); only the code
-itself is used to pair an images folder with a reports folder, and several
-folders sharing one code are scanned together as that code.
-
-PDF file names no longer have to contain the code - the code always comes
-from the folder the PDF sits in. Dates in PDF names may be numeric
-(22-11-2018) or use a month name (22-NOV-2018), and the modality is read
-from words like Echo / MRI / CT in the PDF name (falling back to the folder
-name when the file name has neither a date nor a modality).
+    <images_root>/AA001/...       <- DICOM files, any extension/none
+    <reports_root>/AA001/...      <- PDF reports named like AA001-CT-01-15-2020.pdf
 
 Usage:
     python match_reports.py <images_root> <reports_root> [output.xlsx] [options]
 
 Positional args:
-    images_root    Folder containing one subfolder per code with DICOM files
-    reports_root   Folder containing one subfolder per code with PDF reports
+    images_root    Folder containing one subfolder per R-code with DICOM files
+    reports_root   Folder containing one subfolder per R-code with PDF reports
     output.xlsx    Combined summary path (default: ./match_report.xlsx)
 
 Options:
-    --workers N       Run N codes in parallel (one worker process per code).
-                      Default 1 (serial, original behavior). Safe to raise since
-                      every code reads/writes independently of the others.
-    --code LIST       Only process these codes, comma-separated
-                      (e.g. --code AVSD0001,AVSD0002). Default: all codes found.
-                      --rcode is accepted as an alias.
-    --code-regex RE   Pattern that finds the code inside a folder name.
-                      Default: AVSD[-_ ]?\\d+ (case-insensitive).
-    --date-order X    Order to assume for ambiguous all-numeric dates such as
-                      05-06-2018: dmy (default, = 5 June) or mdy (= 6 May).
-                      Dates where one number is > 12, ISO dates and month-name
-                      dates are detected regardless of this setting.
-    --force           Reprocess codes even if a <code>-results.xlsx already
-                      exists (default: skip codes already done, for resuming).
-    --debug           Verbose per-file parse/skip logging to stdout.
+    --workers N    Run N R-codes in parallel (one worker process per R-code).
+                    Default 1 (serial, original behavior). Safe to raise since
+                    every R-code reads/writes independently of the others.
+    --rcode LIST   Only process these R-codes, comma-separated
+                    (e.g. --rcode AA001,AA002). Default: all R-codes found.
+    --force        Reprocess R-codes even if a <code>-results.xlsx already
+                    exists (default: skip codes already done, for resuming).
+    --debug        Verbose per-file parse/skip logging to stdout.
 
 Examples:
     # Basic run, serial
     python match_reports.py "/mnt/data/images" "/mnt/data/reports" match_report.xlsx
 
-    # Parallel across codes, 8 workers
+    # Parallel across R-codes, 8 workers
     python match_reports.py "/mnt/data/images" "/mnt/data/reports" match_report.xlsx --workers 8
 
-    # Resume an interrupted run (already-done codes are skipped automatically)
+    # Resume an interrupted run (already-done R-codes are skipped automatically)
     python match_reports.py "/mnt/data/images" "/mnt/data/reports" match_report.xlsx --workers 8
 
-    # Reprocess only specific codes, forcing even if already done
-    python match_reports.py "/mnt/data/images" "/mnt/data/reports" match_report.xlsx --code AVSD0001,AVSD0002 --force
+    # Reprocess only specific R-codes, forcing even if already done
+    python match_reports.py "/mnt/data/images" "/mnt/data/reports" match_report.xlsx --rcode AA001,AA002 --force
 
-Per-code results land in <output.xlsx's folder>/results/<code>-results.xlsx;
+Per-R-code results land in <output.xlsx's folder>/results/<code>-results.xlsx;
 progress/heartbeat logging is appended to results/progress.log on every run.
 """
 
@@ -72,35 +54,10 @@ from pathlib import Path
 import pydicom
 from openpyxl import Workbook, load_workbook
 
-# --- Study code -------------------------------------------------------------
-# Folder names look like "AVSD0001", "AVSD0001 base date", "AVSD_0001 follow up".
-# Only the code part is used to pair an images folder with a reports folder.
-DEFAULT_CODE_PATTERN = r"AVSD[-_ ]?\d+"
-
-# --- Dates ------------------------------------------------------------------
-MONTH_NUMBERS = {
-    "JAN": "01", "FEB": "02", "MAR": "03", "APR": "04",
-    "MAY": "05", "JUN": "06", "JUL": "07", "AUG": "08",
-    "SEP": "09", "OCT": "10", "NOV": "11", "DEC": "12",
-}
-_MONTH_ALT = "|".join(MONTH_NUMBERS)
-_SEP = r"[-_.,\s]*"
-
-# 2018-11-22 / 2018_11_22
-ISO_DATE_RE = re.compile(r"(?<!\d)(\d{4})[-_.](\d{1,2})[-_.](\d{1,2})(?!\d)")
-# 22-NOV-2018, 22 November 2018, 22NOV2018
-DAY_MONTH_NAME_RE = re.compile(
-    rf"(?<!\d)(\d{{1,2}}){_SEP}({_MONTH_ALT})[A-Z]*{_SEP}(\d{{4}})(?!\d)"
-)
-# NOV-22-2018, November 22, 2018
-MONTH_NAME_DAY_RE = re.compile(
-    rf"(?<![A-Z])({_MONTH_ALT})[A-Z]*{_SEP}(\d{{1,2}}){_SEP}(\d{{4}})(?!\d)"
-)
-# 22-11-2018 / 11-22-2018 / 22.11.2018 - order resolved by resolve_numeric_date
-NUMERIC_DATE_RE = re.compile(r"(?<!\d)(\d{1,2})[-_.](\d{1,2})[-_.](\d{4})(?!\d)")
+DATE_RE = re.compile(r"(\d{2})[-_.](\d{2})[-_.](\d{4})")
 
 # How often, in files examined, to emit a heartbeat line while scanning a
-# single code folder. Large folders otherwise look hung for hours.
+# single R-code folder. Large folders otherwise look hung for hours.
 PROGRESS_EVERY = 2000
 
 SUMMARY_HEADER = [
@@ -113,49 +70,30 @@ SUMMARY_HEADER = [
 ]
 SUMMARY_WIDTHS = (12, 14, 10, 16, 45, 40)
 
-# Characters that can't go in a filename, in case a code folder has one.
+# Characters that can't go in a filename, in case an R-code folder has one.
 UNSAFE_NAME_RE = re.compile(r'[\\/:*?"<>|]')
 
 # PDF-filename token (uppercased) -> standard DICOM Modality code.
 # Extend this as you find more variants in the real filenames.
 MODALITY_ALIASES = {
     "CT": "CT",
-    "CTA": "CT",
-    "CT ANGIO": "CT",
     "MRI": "MR",
     "MR": "MR",
-    "MRA": "MR",
-    "CMR": "MR",
-    "CARDIAC MRI": "MR",
     "ECHO": "US",
     "ECHOCARDIOGRAM": "US",
-    "ECHOCARDIOGRAPHY": "US",
-    "TTE": "US",
-    "TEE": "US",
     "ULTRASOUND": "US",
     "US": "US",
     "XRAY": "CR",
     "X-RAY": "CR",
-    "CXR": "CR",
     "DX": "DX",
     "MAMMO": "MG",
     "MG": "MG",
     "PET": "PT",
-    "SPECT": "NM",
     "NM": "NM",
-    "ANGIO": "XA",
-    "ANGIOGRAM": "XA",
-    "ANGIOGRAPHY": "XA",
-    "CATH": "XA",
-    "ECG": "ECG",
-    "EKG": "ECG",
 }
-# Longest alias first so "MRI" wins over "MR" and "ECHOCARDIOGRAM" over "ECHO".
 MODALITY_RE = re.compile(
     r"(?<![A-Z0-9])("
-    + "|".join(
-        re.escape(k) for k in sorted(MODALITY_ALIASES, key=len, reverse=True)
-    )
+    + "|".join(re.escape(k) for k in MODALITY_ALIASES)
     + r")(?![A-Z0-9])"
 )
 
@@ -177,7 +115,6 @@ MODALITY_DISPLAY_NAMES = {
     "XA": "Angiography",
     "RF": "Fluoroscopy",
     "SR": "Structured Report",
-    "ECG": "ECG",
 }
 
 _log_fh = None
@@ -224,77 +161,16 @@ def display_modality(code):
     return MODALITY_DISPLAY_NAMES.get(code.strip().upper(), code)
 
 
-def result_path(results_dir, code):
-    return results_dir / f"{UNSAFE_NAME_RE.sub('_', code)}-results.xlsx"
+def result_path(results_dir, rcode):
+    return results_dir / f"{UNSAFE_NAME_RE.sub('_', rcode)}-results.xlsx"
 
 
-def extract_code(name, code_re):
-    """Pull the study code out of a folder name, ignoring any extra text.
-
-    "AVSD0001 base date" / "avsd_0001 follow-up" -> "AVSD0001".
-    Returns None when the name carries no code at all.
-    """
-    match = code_re.search(name)
+def parse_pdf_date(name):
+    match = DATE_RE.search(name)
     if not match:
         return None
-    raw = match.group(0)
-    digits = re.search(r"\d+", raw).group(0)
-    prefix = raw[: raw.index(digits)].strip(" -_").upper()
-    return f"{prefix}{digits}"
-
-
-def _make_date(year, month, day):
-    """Validate a Y/M/D triple and render it the way DICOM StudyDate does."""
-    month, day = int(month), int(day)
-    if not (1 <= month <= 12 and 1 <= day <= 31):
-        return None
-    return f"{int(year):04d}{month:02d}{day:02d}"
-
-
-def resolve_numeric_date(first, second, year, date_order):
-    """22-11-2018 -> 20181122. Whichever number is > 12 has to be the day;
-    when both could be a month, fall back to the configured order."""
-    a, b = int(first), int(second)
-    if a > 12 and b <= 12:
-        return _make_date(year, b, a)
-    if b > 12 and a <= 12:
-        return _make_date(year, a, b)
-    if date_order == "mdy":
-        return _make_date(year, a, b)
-    return _make_date(year, b, a)
-
-
-def parse_pdf_date(name, date_order="dmy"):
-    """First date found in a file/folder name, as YYYYMMDD (or None)."""
-    upper = name.upper()
-
-    match = ISO_DATE_RE.search(upper)
-    if match:
-        year, month, day = match.groups()
-        date = _make_date(year, month, day)
-        if date:
-            return date
-
-    match = DAY_MONTH_NAME_RE.search(upper)
-    if match:
-        day, month_name, year = match.groups()
-        date = _make_date(year, MONTH_NUMBERS[month_name], day)
-        if date:
-            return date
-
-    match = MONTH_NAME_DAY_RE.search(upper)
-    if match:
-        month_name, day, year = match.groups()
-        date = _make_date(year, MONTH_NUMBERS[month_name], day)
-        if date:
-            return date
-
-    match = NUMERIC_DATE_RE.search(upper)
-    if match:
-        first, second, year = match.groups()
-        return resolve_numeric_date(first, second, year, date_order)
-
-    return None
+    month, day, year = match.groups()
+    return f"{year}{month}{day}"
 
 
 def parse_pdf_modality(name):
@@ -302,19 +178,6 @@ def parse_pdf_modality(name):
     if not match:
         return None
     return MODALITY_ALIASES[match.group(1)]
-
-
-def name_chain(path, root):
-    """The PDF's own name, then every folder name up to and including the
-    code folder - used to recover a date/modality the file name lacks."""
-    names = [path.name]
-    parent = path.parent
-    while True:
-        names.append(parent.name)
-        if parent == root or parent.parent == parent:
-            break
-        parent = parent.parent
-    return names
 
 
 def read_dicom_study(path, debug=False):
@@ -344,44 +207,25 @@ def read_dicom_study(path, debug=False):
     return study_date, modality
 
 
-def scan_reports_dir(code_dir, date_order="dmy", debug=False):
-    """One code folder's reports -> list of {"path", "date", "modality"}.
-
-    The PDF name itself is preferred; when it has no date (or no modality)
-    the enclosing folder names are searched instead, since the new file
-    names don't always carry the code/date.
-    """
+def scan_reports_dir(rcode_dir, debug=False):
+    """One R-code's reports folder -> list of {"path", "date", "modality"}."""
     entries = []
-    for path in sorted(code_dir.rglob("*.pdf")):
+    for path in sorted(rcode_dir.rglob("*.pdf")):
         if not path.is_file():
             continue
-        date = modality = None
-        date_from = modality_from = None
-        for name in name_chain(path, code_dir):
-            if date is None:
-                date = parse_pdf_date(name, date_order)
-                if date is not None:
-                    date_from = name
-            if modality is None:
-                modality = parse_pdf_modality(name)
-                if modality is not None:
-                    modality_from = name
-            if date is not None and modality is not None:
-                break
+        date = parse_pdf_date(path.name)
+        modality = parse_pdf_modality(path.name)
         entries.append({"path": path, "date": date, "modality": modality})
         if debug:
-            print(
-                f"  {path.name!r} -> date={date!r} (from {date_from!r}) "
-                f"modality={modality!r} (from {modality_from!r})"
-            )
+            print(f"  {path.name!r} -> date={date!r} modality={modality!r}")
     return entries
 
 
-def build_indices(code_reports):
-    """entries -> (by_date_modality, by_date) lookup dicts for one code."""
+def build_indices(rcode_reports):
+    """entries -> (by_date_modality, by_date) lookup dicts for one R-code."""
     by_date_modality = defaultdict(list)
     by_date = defaultdict(list)
-    for entry in code_reports:
+    for entry in rcode_reports:
         if entry["date"] is None:
             continue
         by_date[entry["date"]].append(entry)
@@ -390,28 +234,18 @@ def build_indices(code_reports):
     return by_date_modality, by_date
 
 
-def process_code(code, images_dirs, reports_dirs, date_order="dmy", debug=False):
-    """Scan one code end to end, across every folder carrying that code.
-
-    Returns (rows, stats).
-    """
+def process_rcode(rcode, images_dir, reports_dir, debug=False):
+    """Scan one R-code end to end. Returns (rows, stats)."""
     started = time.time()
-    images_dirs = list(images_dirs or [])
-    reports_dirs = list(reports_dirs or [])
-
-    code_reports = []
-    for reports_dir in reports_dirs:
-        code_reports.extend(
-            scan_reports_dir(reports_dir, date_order=date_order, debug=debug)
-        )
-    by_date_modality, by_date = build_indices(code_reports)
+    rcode_reports = scan_reports_dir(reports_dir, debug=debug) if reports_dir else []
+    by_date_modality, by_date = build_indices(rcode_reports)
 
     # (study_date, modality) -> {"count", "matched_pdfs"}
     summary = defaultdict(lambda: {"count": 0, "matched_pdfs": set()})
     matched_pdf_paths = set()
     files_seen = dicom_seen = 0
 
-    for images_dir in images_dirs:
+    if images_dir is not None:
         for path in images_dir.rglob("*"):
             if not path.is_file():
                 continue
@@ -420,7 +254,7 @@ def process_code(code, images_dirs, reports_dirs, date_order="dmy", debug=False)
                 elapsed = time.time() - started
                 rate = files_seen / elapsed if elapsed else 0
                 log(
-                    f"    {code}: {files_seen:,} files examined, "
+                    f"    {rcode}: {files_seen:,} files examined, "
                     f"{dicom_seen:,} DICOM, {format_duration(elapsed)} elapsed "
                     f"({rate:,.0f} files/s)"
                 )
@@ -449,7 +283,7 @@ def process_code(code, images_dirs, reports_dirs, date_order="dmy", debug=False)
         if info["matched_pdfs"]:
             status = "Matched"
             matched += 1
-        elif code_reports:
+        elif rcode_reports:
             status = "Same folder, no date/modality match - review manually"
             ambiguous += 1
         else:
@@ -457,7 +291,7 @@ def process_code(code, images_dirs, reports_dirs, date_order="dmy", debug=False)
             unmatched_images += 1
         rows.append(
             [
-                code,
+                rcode,
                 study_date,
                 display_modality(modality),
                 info["count"],
@@ -468,12 +302,12 @@ def process_code(code, images_dirs, reports_dirs, date_order="dmy", debug=False)
 
     unmatched_pdf = 0
     for entry in sorted(
-        code_reports, key=lambda e: (e["date"] or "", e["modality"] or "")
+        rcode_reports, key=lambda e: (e["date"] or "", e["modality"] or "")
     ):
         if entry["path"] not in matched_pdf_paths:
             rows.append(
                 [
-                    code,
+                    rcode,
                     entry["date"] or "",
                     display_modality(entry["modality"]) or "",
                     "",
@@ -486,7 +320,7 @@ def process_code(code, images_dirs, reports_dirs, date_order="dmy", debug=False)
     stats = {
         "files_seen": files_seen,
         "dicom_seen": dicom_seen,
-        "pdfs": len(code_reports),
+        "pdfs": len(rcode_reports),
         "matched": matched,
         "ambiguous": ambiguous,
         "unmatched_images": unmatched_images,
@@ -517,7 +351,7 @@ def write_summary_sheet(path, rows, title="Summary"):
 
 
 def read_result_rows(path):
-    """Read back one per-code results file, minus its header row."""
+    """Read back one per-R-code results file, minus its header row."""
     wb = load_workbook(path, read_only=True, data_only=True)
     try:
         ws = wb.active
@@ -527,7 +361,7 @@ def read_result_rows(path):
 
 
 def combine_results(results_dir, output_xlsx):
-    """Rebuild the all-codes summary from every per-code file on disk."""
+    """Rebuild the all-codes summary from every per-R-code file on disk."""
     rows = []
     files = sorted(results_dir.glob("*-results.xlsx"))
     for path in files:
@@ -544,9 +378,7 @@ def combine_results(results_dir, output_xlsx):
 def parse_args(argv):
     debug = "--debug" in argv
     force = "--force" in argv
-    code_filter = None
-    code_pattern = DEFAULT_CODE_PATTERN
-    date_order = "dmy"
+    rcode_filter = None
     workers = 1
     positional = []
     i = 0
@@ -554,31 +386,13 @@ def parse_args(argv):
         a = argv[i]
         if a in ("--debug", "--force"):
             i += 1
-        elif a in ("--code", "--rcode"):
+        elif a == "--rcode":
             if i + 1 >= len(argv):
                 print(
-                    "--code requires a value, e.g. --code AVSD0001 or "
-                    "--code AVSD0001,AVSD0002"
+                    "--rcode requires a value, e.g. --rcode R123 or --rcode R123,R456"
                 )
                 sys.exit(1)
-            code_filter = {
-                c.strip().upper() for c in argv[i + 1].split(",") if c.strip()
-            }
-            i += 2
-        elif a == "--code-regex":
-            if i + 1 >= len(argv):
-                print(r"--code-regex requires a value, e.g. --code-regex 'AVSD\d+'")
-                sys.exit(1)
-            code_pattern = argv[i + 1]
-            i += 2
-        elif a == "--date-order":
-            if i + 1 >= len(argv):
-                print("--date-order requires a value: dmy or mdy")
-                sys.exit(1)
-            date_order = argv[i + 1].strip().lower()
-            if date_order not in ("dmy", "mdy"):
-                print(f"--date-order must be dmy or mdy, got {argv[i + 1]!r}")
-                sys.exit(1)
+            rcode_filter = {c.strip() for c in argv[i + 1].split(",") if c.strip()}
             i += 2
         elif a == "--workers":
             if i + 1 >= len(argv):
@@ -596,53 +410,21 @@ def parse_args(argv):
         else:
             positional.append(a)
             i += 1
-    return positional, debug, force, code_filter, code_pattern, date_order, workers
+    return positional, debug, force, rcode_filter, workers
 
 
-def group_dirs_by_code(root, code_re, code_filter, side):
-    """Subfolders of root -> {code: [dirs]}, ignoring extra text in the names.
-
-    A folder whose name has no recognisable code keeps its full name as its
-    key (and is reported), so nothing silently drops out of the run.
-    """
-    groups = defaultdict(list)
-    nameless = []
-    for path in sorted(p for p in root.iterdir() if p.is_dir()):
-        code = extract_code(path.name, code_re)
-        if code is None:
-            code = path.name.strip().upper()
-            nameless.append(path.name)
-        if code_filter is not None and code not in code_filter:
-            continue
-        groups[code].append(path)
-    if nameless:
-        log(
-            f"  WARNING: {len(nameless)} {side} folder(s) have no code in their "
-            f"name and are keyed by folder name: {', '.join(nameless[:10])}"
-            + (" ..." if len(nameless) > 10 else "")
-        )
-    return groups
+def list_rcode_dirs(root, rcode_filter):
+    dirs = sorted(p for p in root.iterdir() if p.is_dir())
+    if rcode_filter is not None:
+        dirs = [d for d in dirs if d.name in rcode_filter]
+    return dirs
 
 
 def main():
-    (
-        args,
-        debug,
-        force,
-        code_filter,
-        code_pattern,
-        date_order,
-        workers,
-    ) = parse_args(sys.argv[1:])
+    args, debug, force, rcode_filter, workers = parse_args(sys.argv[1:])
 
     if len(args) < 2:
         print(__doc__)
-        sys.exit(1)
-
-    try:
-        code_re = re.compile(code_pattern, re.IGNORECASE)
-    except re.error as exc:
-        print(f"--code-regex is not a valid regular expression: {exc}")
         sys.exit(1)
 
     images_root = Path(args[0]).expanduser().resolve()
@@ -659,35 +441,29 @@ def main():
     results_dir.mkdir(parents=True, exist_ok=True)
     open_log(results_dir / "progress.log")
 
+    image_dirs = {p.name: p for p in list_rcode_dirs(images_root, rcode_filter)}
+    report_dirs = {p.name: p for p in list_rcode_dirs(reports_root, rcode_filter)}
+    rcodes = sorted(set(image_dirs) | set(report_dirs))
+
     log(f"Images:  {images_root}")
     log(f"Reports: {reports_root}")
     log(f"Results: {results_dir}")
-    log(f"Code pattern: {code_pattern}  |  ambiguous numeric dates read as {date_order}")
-
-    image_dirs = group_dirs_by_code(images_root, code_re, code_filter, "images")
-    report_dirs = group_dirs_by_code(reports_root, code_re, code_filter, "reports")
-    codes = sorted(set(image_dirs) | set(report_dirs))
-
-    if code_filter is not None:
-        log(f"Restricting scan to code(s): {sorted(code_filter)}")
+    if rcode_filter is not None:
+        log(f"Restricting scan to R-code(s): {sorted(rcode_filter)}")
 
     if debug:
-        print("\n--- code comparison ---")
+        print("\n--- R-code comparison ---")
         print(f"In both: {sorted(set(image_dirs) & set(report_dirs))}")
         print(f"Only in images: {sorted(set(image_dirs) - set(report_dirs))}")
         print(f"Only in reports: {sorted(set(report_dirs) - set(image_dirs))}")
-        for name in codes:
-            print(f"  code: {name!r}")
-            for path in image_dirs.get(name, []):
-                print(f"      images  <- {path.name!r}")
-            for path in report_dirs.get(name, []):
-                print(f"      reports <- {path.name!r}")
-        print("--- end code comparison ---\n")
+        for name in rcodes:
+            print(f"  rcode: {name!r}")
+        print("--- end R-code comparison ---\n")
 
-    todo = [c for c in codes if force or not result_path(results_dir, c).exists()]
-    already_done = len(codes) - len(todo)
+    todo = [c for c in rcodes if force or not result_path(results_dir, c).exists()]
+    already_done = len(rcodes) - len(todo)
     log(
-        f"{len(codes)} code(s) in scope; {already_done} already have results, {len(todo)} to do"
+        f"{len(rcodes)} R-code folder(s) in scope; {already_done} already have results, {len(todo)} to do"
     )
     if already_done and not force:
         log("(pass --force to re-scan the ones that already have a results file)")
@@ -696,24 +472,20 @@ def main():
     totals = defaultdict(int)
 
     if workers == 1:
-        for index, code in enumerate(todo, start=1):
+        for index, rcode in enumerate(todo, start=1):
             remaining = len(todo) - index
             log(
-                f"[{index}/{len(todo)}] {code}: starting ({remaining} code(s) left after this)"
+                f"[{index}/{len(todo)}] {rcode}: starting ({remaining} folder(s) left after this)"
             )
-            rows, stats = process_code(
-                code,
-                image_dirs.get(code),
-                report_dirs.get(code),
-                date_order=date_order,
-                debug=debug,
+            rows, stats = process_rcode(
+                rcode, image_dirs.get(rcode), report_dirs.get(rcode), debug=debug
             )
-            out = result_path(results_dir, code)
+            out = result_path(results_dir, rcode)
             write_summary_sheet(out, rows)
             for key, value in stats.items():
                 totals[key] += value
             log(
-                f"[{index}/{len(todo)}] {code}: done in {format_duration(stats['elapsed'])} - "
+                f"[{index}/{len(todo)}] {rcode}: done in {format_duration(stats['elapsed'])} - "
                 f"{stats['files_seen']:,} files ({stats['dicom_seen']:,} DICOM), "
                 f"{stats['pdfs']} PDF(s), {stats['matched']} matched study bucket(s), "
                 f"{stats['ambiguous']} needing review, {stats['unmatched_pdf']} unmatched PDF(s) "
@@ -726,7 +498,7 @@ def main():
                     f"    run elapsed {format_duration(elapsed)}, rough ETA {format_duration(eta)} for the rest"
                 )
     else:
-        log(f"Running with {workers} parallel workers, one code per worker")
+        log(f"Running with {workers} parallel workers, one R-code folder per worker")
         completed = 0
         with concurrent.futures.ProcessPoolExecutor(
             max_workers=workers,
@@ -735,30 +507,25 @@ def main():
         ) as pool:
             futures = {
                 pool.submit(
-                    process_code,
-                    code,
-                    image_dirs.get(code),
-                    report_dirs.get(code),
-                    date_order,
-                    debug,
-                ): code
-                for code in todo
+                    process_rcode, rcode, image_dirs.get(rcode), report_dirs.get(rcode), debug
+                ): rcode
+                for rcode in todo
             }
             for future in concurrent.futures.as_completed(futures):
-                code = futures[future]
+                rcode = futures[future]
                 completed += 1
                 remaining = len(todo) - completed
                 try:
                     rows, stats = future.result()
                 except Exception as exc:
-                    log(f"[{completed}/{len(todo)}] {code}: FAILED: {type(exc).__name__}: {exc}")
+                    log(f"[{completed}/{len(todo)}] {rcode}: FAILED: {type(exc).__name__}: {exc}")
                     continue
-                out = result_path(results_dir, code)
+                out = result_path(results_dir, rcode)
                 write_summary_sheet(out, rows)
                 for key, value in stats.items():
                     totals[key] += value
                 log(
-                    f"[{completed}/{len(todo)}] {code}: done in {format_duration(stats['elapsed'])} - "
+                    f"[{completed}/{len(todo)}] {rcode}: done in {format_duration(stats['elapsed'])} - "
                     f"{stats['files_seen']:,} files ({stats['dicom_seen']:,} DICOM), "
                     f"{stats['pdfs']} PDF(s), {stats['matched']} matched study bucket(s), "
                     f"{stats['ambiguous']} needing review, {stats['unmatched_pdf']} unmatched PDF(s) "
@@ -775,7 +542,9 @@ def main():
     file_count, row_count = combine_results(results_dir, output_xlsx)
 
     log("")
-    log(f"Codes scanned this run: {len(todo)} (skipped as already done: {already_done})")
+    log(
+        f"R-codes scanned this run: {len(todo)} (skipped as already done: {already_done})"
+    )
     log(
         f"Files examined: {totals['files_seen']:,} ({totals['dicom_seen']:,} readable DICOM)"
     )
@@ -784,9 +553,9 @@ def main():
     log(f"DICOM studies with no PDF report: {totals['unmatched_images']}")
     log(f"PDF reports with no DICOM images: {totals['unmatched_pdf']}")
     log(f"Total run time: {format_duration(time.time() - run_started)}")
-    log(f"Per-code results: {results_dir}")
+    log(f"Per-R-code results: {results_dir}")
     log(
-        f"Combined summary ({row_count:,} rows from {file_count} code file(s)): {output_xlsx}"
+        f"Combined summary ({row_count:,} rows from {file_count} R-code file(s)): {output_xlsx}"
     )
 
 
