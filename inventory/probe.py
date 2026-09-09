@@ -102,6 +102,13 @@ CREATE INDEX IF NOT EXISTS studies_dir ON studies(dir_id);
 """
 
 
+# Extensions trustworthy enough to skip opening the file. DICOM extensions are
+# deliberately NOT in here: a name ending .dcm tells us the kind, but we still
+# have to open it to store the header, which is the whole point of this pass.
+DICOM_EXTS = {"dcm", "dicom", "ima"}
+SKIP_EXTS = {e: k for e, k in KNOWN_EXTS.items() if e not in DICOM_EXTS}
+
+
 def sniff_magic(head):
     """Identify a file from its first bytes. Returns a kind, or 'unknown'."""
     if len(head) >= 132 and head[128:132] == b"DICM":
@@ -253,7 +260,7 @@ def main():
         conn.commit()
 
     # Directories holding at least one file we can't identify by extension.
-    unknown_exts = ",".join("?" * len(KNOWN_EXTS))
+    unknown_exts = ",".join("?" * len(SKIP_EXTS))
     todo = conn.execute(
         f"""SELECT d.id, d.path
               FROM dirs d
@@ -263,7 +270,7 @@ def main():
                               AND f.ext NOT IN ({unknown_exts}))
                AND d.id NOT IN (SELECT dir_id FROM dir_probe)
           ORDER BY d.id""",
-        list(KNOWN_EXTS),
+        list(SKIP_EXTS),
     ).fetchall()
 
     done_already = conn.execute("SELECT COUNT(*) FROM dir_probe").fetchone()[0]
@@ -285,7 +292,7 @@ def main():
                 candidates = conn.execute(
                     f"SELECT id, name FROM files "
                     f"WHERE dir_id = ? AND ext NOT IN ({unknown_exts})",
-                    [dir_id] + list(KNOWN_EXTS),
+                    [dir_id] + list(SKIP_EXTS),
                 ).fetchall()
                 fut = pool.submit(probe_dir, dir_path, candidates,
                                   args.sample, args.metadata)
@@ -296,6 +303,12 @@ def main():
                 dir_id, candidates = in_flight.pop(fut)
                 method, results, note = fut.result()
                 n_files_read += len(results)
+
+                # Re-probing a directory must replace its studies, not add a
+                # second set. dicom_meta and files are keyed by file_id so they
+                # overwrite on their own; studies has a synthetic id and does
+                # not.
+                conn.execute("DELETE FROM studies WHERE dir_id = ?", (dir_id,))
 
                 for fid, r in results.items():
                     if r[0] == "dicom" and r[4]:
