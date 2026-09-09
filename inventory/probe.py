@@ -35,6 +35,7 @@ import os
 import random
 import sqlite3
 import sys
+import threading
 import time
 from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, wait
 
@@ -120,6 +121,18 @@ def sniff_magic(head):
     return "unknown"
 
 
+# How many bytes we actually pulled off the share. The whole point of
+# stop_before_pixels is that this stays a small fraction of the archive size,
+# so it is worth measuring rather than assuming.
+_bytes_lock = threading.Lock()
+_bytes_read = [0]
+
+
+def _count(n):
+    with _bytes_lock:
+        _bytes_read[0] += n
+
+
 def read_one(path, keep_full=True):
     """Return (kind, study_uid, study_date, modality, header_json).
 
@@ -133,9 +146,11 @@ def read_one(path, keep_full=True):
             head = fh.read(132)
             kind = sniff_magic(head)
             if kind != "dicom":
+                _count(len(head))
                 return kind, None, None, None, None
             fh.seek(0)
             ds = pydicom.dcmread(fh, stop_before_pixels=True)
+            _count(fh.tell())
             blob = None
             if keep_full:
                 try:
@@ -339,6 +354,10 @@ def main():
                 if n_files_read:
                     print(f"  metadata so far: {size / 1e6:,.1f} MB "
                           f"({size / max(n_files_read,1):,.0f} bytes/file)")
+                    pulled = _bytes_read[0]
+                    print(f"  pulled off the share: {pulled / 1e6:,.1f} MB "
+                          f"({pulled / max(n_files_read,1):,.0f} bytes/file) "
+                          f"- pixel data is never read")
                 print("\nRe-run without --probe to continue; it resumes here.")
                 return
             if now - last_report >= PROGRESS_SECONDS:
@@ -361,6 +380,9 @@ def main():
     print(f"\ndone in {(time.time() - started) / 60:.1f} min")
     print(f"  {n_done:,} directories probed, {n_files_read:,} files actually opened")
     print(f"  {n_studies:,} studies, {n_slices:,} DICOM files")
+    pulled = _bytes_read[0]
+    print(f"  {pulled / 1e9:,.2f} GB actually pulled off the share "
+          f"({pulled / max(n_files_read,1):,.0f} bytes/file average)")
     if args.metadata == "all":
         print("  every DICOM read - study counts are exact, and any tag can be "
               "pulled later\n  with extract.py without touching the archive again")

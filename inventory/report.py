@@ -46,6 +46,7 @@ Usage:
 
 import argparse
 import csv
+import inspect
 import os
 import re
 import sqlite3
@@ -55,9 +56,22 @@ from collections import Counter, defaultdict
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from match_reports import (  # noqa: E402  - reuse, don't reimplement
     display_modality,
-    parse_pdf_date,
+    parse_pdf_date as _parse_pdf_date,
     parse_pdf_modality,
 )
+
+# Older copies of match_reports.py have parse_pdf_date(name) with no
+# date_order. Adapt rather than require a particular vintage of that file, but
+# say so loudly - silently ignoring --date-order would misread every date in a
+# mdy archive.
+if len(inspect.signature(_parse_pdf_date).parameters) >= 2:
+    parse_pdf_date = _parse_pdf_date
+    HAS_DATE_ORDER = True
+else:
+    HAS_DATE_ORDER = False
+
+    def parse_pdf_date(name, date_order="dmy"):
+        return _parse_pdf_date(name)
 from probe import KNOWN_EXTS  # noqa: E402
 
 KIND_COLUMNS = ["dicom", "pdf", "word", "excel", "slides", "image", "video",
@@ -527,6 +541,14 @@ def main():
     ap.add_argument("--prefer", default="filename", choices=["filename", "folder"])
     ap.add_argument("--csv", default=None)
     args = ap.parse_args()
+
+    if not HAS_DATE_ORDER:
+        print("note: your match_reports.py is an older copy whose "
+              "parse_pdf_date() takes no date_order.", file=sys.stderr)
+        if args.date_order != "dmy":
+            print(f"      --date-order {args.date_order} CANNOT be applied. "
+                  "Copy the newer match_reports.py if your PDF dates are "
+                  "month-day-year.", file=sys.stderr)
 
     if args.discover:
         discover(sqlite3.connect(args.db))
