@@ -159,6 +159,19 @@ def read_one(path, keep_full=True):
             fh.seek(0)
             ds = pydicom.dcmread(fh, stop_before_pixels=True)
             _count(fh.tell())
+
+            # A DICOMDIR is an index, not an image: its DirectoryRecordSequence
+            # holds one record per file in the folder, so its header can be
+            # thousands of entries and megabytes of JSON - all of it duplicating
+            # what we already store per file. Keep the small outer header, drop
+            # the sequence, and don't let it become a study.
+            if "DirectoryRecordSequence" in ds:
+                del ds.DirectoryRecordSequence
+                try:
+                    blob = json.dumps(ds.to_json_dict()) if keep_full else None
+                except Exception:
+                    blob = None
+                return "dicomdir", None, None, None, blob
             blob = None
             if keep_full:
                 try:
@@ -252,6 +265,18 @@ def main():
     args = ap.parse_args()
 
     conn = sqlite3.connect(args.db)
+    # Defaults are tuned for small transactions. This pass writes millions of
+    # multi-KB blobs, and the auto-checkpoint (every ~4 MB of WAL by default)
+    # stalls every writer while it folds the WAL back into a growing database -
+    # which shows up as the network dropping to zero for seconds at a time.
+    conn.executescript("""
+        PRAGMA journal_mode = WAL;
+        PRAGMA synchronous = NORMAL;
+        PRAGMA wal_autocheckpoint = 20000;   -- ~80 MB instead of ~4 MB
+        PRAGMA cache_size = -262144;         -- 256 MB page cache
+        PRAGMA temp_store = MEMORY;
+        PRAGMA busy_timeout = 30000;
+    """)
     conn.executescript(SCHEMA)
     if args.force:
         conn.executescript(
@@ -342,10 +367,27 @@ def main():
                 "INSERT OR REPLACE INTO dir_probe VALUES (?,?,?,?,?)",
                 (dir_id, method, len(results), n_dicom, note))
 
+        meta_rows, kind_rows = [], []
+
+        def flush_rows():
+            """One executemany beats thousands of execute() calls, and it keeps
+            the main thread out of the way so workers never run dry."""
+            if meta_rows:
+                conn.executemany(
+                    "INSERT OR REPLACE INTO dicom_meta VALUES (?,?,?)",
+                    meta_rows)
+                meta_rows.clear()
+            if kind_rows:
+                conn.executemany(
+                    "UPDATE files SET kind = ?, kind_source = ? WHERE id = ?",
+                    kind_rows)
+                kind_rows.clear()
+
         while queue or in_flight or pending:
             # Keep exactly one bound on outstanding work, whether the unit is
             # a file or a directory, so one enormous folder can't flood memory.
-            while len(in_flight) < args.workers * 2 and (queue or pending):
+            slack = args.workers * (4 if read_by_file else 2)
+            while len(in_flight) < slack and (queue or pending):
                 if read_by_file:
                     if not pending:
                         dir_id, dir_path = queue.pop()
@@ -375,12 +417,8 @@ def main():
                     # study grouping needs. Holding every blob until the last
                     # file of a 50,000-slice folder lands would be gigabytes.
                     if kind == "dicom" and blob:
-                        conn.execute(
-                            "INSERT OR REPLACE INTO dicom_meta VALUES (?,?,?)",
-                            (fid, dir_id, blob))
-                    conn.execute(
-                        "UPDATE files SET kind = ?, kind_source = ? WHERE id = ?",
-                        (kind, "magic", fid))
+                        meta_rows.append((fid, dir_id, blob))
+                    kind_rows.append((kind, "magic", fid))
                     state = open_dirs[dir_id]
                     state[2][fid] = (kind, uid, date, modality)
                     state[1] -= 1
@@ -404,11 +442,16 @@ def main():
                     finish_dir(dir_id, method, results, note, candidates)
                     n_done += 1
 
+            if len(meta_rows) >= 2000 or len(kind_rows) >= 5000:
+                flush_rows()
+
             now = time.time()
             if now - last_commit >= BATCH_SECONDS:
+                flush_rows()
                 conn.commit()
                 last_commit = now
             if args.probe and n_done >= args.probe:
+                flush_rows()
                 conn.commit()
                 el = max(now - started, 0.001)
                 print(f"\n-- probe stopped after {n_done:,} directories --")
@@ -434,6 +477,7 @@ def main():
                       f"{n_files_read:,} files opened  eta~{eta:.1f}h", flush=True)
                 last_report = now
 
+    flush_rows()
     conn.commit()
     # Built now rather than in the schema: maintaining it through millions of
     # UPDATEs above would cost more than building it once at the end.

@@ -75,8 +75,9 @@ else:
         return _parse_pdf_date(name)
 from probe import KNOWN_EXTS  # noqa: E402
 
-KIND_COLUMNS = ["dicom", "pdf", "word", "excel", "slides", "image", "video",
-                "archive", "program", "text", "office", "unknown", "other"]
+KIND_COLUMNS = ["dicom", "dicomdir", "pdf", "word", "excel", "slides", "image",
+                "video", "archive", "program", "text", "office", "unknown",
+                "other"]
 
 # Anything shaped like a code, used only by --discover. Deliberately loose: it
 # will match "batch 1" too, which is the point - you look at the counts and

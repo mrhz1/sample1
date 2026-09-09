@@ -92,6 +92,27 @@ def value_of(header, hex_tag):
     return "\\".join(str(v) for v in value)
 
 
+def show_one(conn, which):
+    """Print one stored header as tag / VR / description / value."""
+    row = conn.execute(
+        "SELECT m.file_id, f.name, d.path, m.json FROM dicom_meta m "
+        "JOIN files f ON f.id = m.file_id JOIN dirs d ON d.id = f.dir_id "
+        "WHERE m.file_id = ? OR f.name = ? LIMIT 1",
+        (which if str(which).isdigit() else -1, which)).fetchone()
+    if not row:
+        print(f"no stored header for {which!r}", file=sys.stderr)
+        return
+    fid, name, path, blob = row
+    header = json.loads(blob)
+    print(f"# file_id {fid}  {path}/{name}")
+    print(f"# {len(header)} tags stored\n")
+    for tag in sorted(header):
+        v = value_of(header, tag)
+        vr = header[tag].get("vr", "")
+        pretty = f"({tag[:4]},{tag[4:]})"
+        print(f"{pretty}  {vr:2}  {describe(tag)[:38]:<38} {str(v)[:60]}")
+
+
 def main():
     ap = argparse.ArgumentParser(description=__doc__.split("\n")[0])
     ap.add_argument("--db", default="inventory.db")
@@ -100,11 +121,17 @@ def main():
     ap.add_argument("--by", default="file", choices=["file", "study"])
     ap.add_argument("--code")
     ap.add_argument("--out")
+    ap.add_argument("--show", metavar="FILE_ID_OR_NAME",
+                    help="print one stored header in readable form, the way "
+                         "pydicom shows it, instead of writing a CSV")
     args = ap.parse_args()
 
     conn = sqlite3.connect(args.db)
     if args.list_tags:
         list_tags(conn)
+        return
+    if args.show:
+        show_one(conn, args.show)
         return
     if not args.tags:
         sys.exit("give --tags, or --list-tags to see what's available")
