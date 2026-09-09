@@ -37,6 +37,7 @@ import sqlite3
 import sys
 import threading
 import time
+from collections import deque
 from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, wait
 
 try:
@@ -283,73 +284,125 @@ def main():
     last_commit = last_report = time.time()
     n_done = n_files_read = 0
 
+    # In "all" mode every file is read, so the unit of parallel work is a FILE,
+    # not a directory. Submitting whole directories would pin one worker to a
+    # 3,000-slice folder and read it serially - which is the difference between
+    # hours and weeks on a latency-bound share. Sampling modes still submit per
+    # directory: they only read a handful of files each, and the escalation
+    # decision needs the samples together.
+    read_by_file = args.metadata == "all"
+
+    def files_of(dir_id):
+        return conn.execute(
+            f"SELECT id, name FROM files "
+            f"WHERE dir_id = ? AND ext NOT IN ({unknown_exts})",
+            [dir_id] + list(SKIP_EXTS),
+        ).fetchall()
+
     with ThreadPoolExecutor(max_workers=args.workers) as pool:
         in_flight = {}
         queue = list(reversed(todo))
-        while queue or in_flight:
-            while queue and len(in_flight) < args.workers * 2:
-                dir_id, dir_path = queue.pop()
-                candidates = conn.execute(
-                    f"SELECT id, name FROM files "
-                    f"WHERE dir_id = ? AND ext NOT IN ({unknown_exts})",
-                    [dir_id] + list(SKIP_EXTS),
-                ).fetchall()
-                fut = pool.submit(probe_dir, dir_path, candidates,
-                                  args.sample, args.metadata)
-                in_flight[fut] = (dir_id, candidates)
+        pending = deque()      # (dir_id, file_id, full_path) not yet submitted
+        open_dirs = {}         # dir_id -> [path, remaining, light_results, n]
+
+        def finish_dir(dir_id, method, results, note, candidates):
+            """Write one directory's studies and mark it probed."""
+            # Re-probing must replace this directory's studies, not add a
+            # second set: dicom_meta and files are keyed by file_id and
+            # overwrite themselves, but studies has a synthetic id.
+            conn.execute("DELETE FROM studies WHERE dir_id = ?", (dir_id,))
+            dicom_reads = [r for r in results.values() if r[0] == "dicom"]
+            if method == "sampled" and dicom_reads:
+                # Samples agreed: treat the directory as that one study.
+                _, uid, date, modality = dicom_reads[0][:4]
+                # The whole directory is that study, so every candidate counts
+                # and every candidate is marked - not just the ones sampled.
+                n_dicom = len(candidates)
+                conn.execute(
+                    "INSERT INTO studies(dir_id, study_uid, study_date, "
+                    "modality, slice_count, confidence) VALUES (?,?,?,?,?,?)",
+                    (dir_id, uid, date, modality, n_dicom, "inferred"))
+                conn.executemany(
+                    "UPDATE files SET kind = ?, kind_source = ? WHERE id = ?",
+                    [("dicom", "inferred", fid) for fid, _ in candidates])
+            else:
+                n_dicom = len(dicom_reads)
+                groups = {}
+                for kind, uid, date, modality in (r[:4] for r in results.values()):
+                    if kind == "dicom":
+                        groups[(uid, date, modality)] = \
+                            groups.get((uid, date, modality), 0) + 1
+                for (uid, date, modality), count in groups.items():
+                    conn.execute(
+                        "INSERT INTO studies(dir_id, study_uid, study_date,"
+                        " modality, slice_count, confidence) "
+                        "VALUES (?,?,?,?,?,?)",
+                        (dir_id, uid, date, modality, count, "counted"))
+            conn.execute(
+                "INSERT OR REPLACE INTO dir_probe VALUES (?,?,?,?,?)",
+                (dir_id, method, len(results), n_dicom, note))
+
+        while queue or in_flight or pending:
+            # Keep exactly one bound on outstanding work, whether the unit is
+            # a file or a directory, so one enormous folder can't flood memory.
+            while len(in_flight) < args.workers * 2 and (queue or pending):
+                if read_by_file:
+                    if not pending:
+                        dir_id, dir_path = queue.pop()
+                        candidates = files_of(dir_id)
+                        open_dirs[dir_id] = [dir_path, len(candidates), {},
+                                             candidates]
+                        for fid, name in candidates:
+                            pending.append(
+                                (dir_id, fid, os.path.join(dir_path, name)))
+                    dir_id, fid, path = pending.popleft()
+                    in_flight[pool.submit(read_one, path, True)] = (dir_id, fid)
+                else:
+                    dir_id, dir_path = queue.pop()
+                    candidates = files_of(dir_id)
+                    fut = pool.submit(probe_dir, dir_path, candidates,
+                                      args.sample, args.metadata)
+                    in_flight[fut] = (dir_id, candidates)
 
             done, _ = wait(list(in_flight), return_when=FIRST_COMPLETED)
+
             for fut in done:
-                dir_id, candidates = in_flight.pop(fut)
-                method, results, note = fut.result()
-                n_files_read += len(results)
-
-                # Re-probing a directory must replace its studies, not add a
-                # second set. dicom_meta and files are keyed by file_id so they
-                # overwrite on their own; studies has a synthetic id and does
-                # not.
-                conn.execute("DELETE FROM studies WHERE dir_id = ?", (dir_id,))
-
-                for fid, r in results.items():
-                    if r[0] == "dicom" and r[4]:
+                if read_by_file:
+                    dir_id, fid = in_flight.pop(fut)
+                    kind, uid, date, modality, blob = fut.result()
+                    n_files_read += 1
+                    # Store the header now and keep only the four fields the
+                    # study grouping needs. Holding every blob until the last
+                    # file of a 50,000-slice folder lands would be gigabytes.
+                    if kind == "dicom" and blob:
                         conn.execute(
                             "INSERT OR REPLACE INTO dicom_meta VALUES (?,?,?)",
-                            (fid, dir_id, r[4]))
-
-                dicom_reads = [r for r in results.values() if r[0] == "dicom"]
-                if method == "sampled" and dicom_reads:
-                    # Samples agreed: the whole directory is that one study.
-                    _, uid, date, modality, _ = dicom_reads[0]
-                    n_dicom = len(candidates)
+                            (fid, dir_id, blob))
                     conn.execute(
-                        "INSERT INTO studies(dir_id, study_uid, study_date, "
-                        "modality, slice_count, confidence) VALUES (?,?,?,?,?,?)",
-                        (dir_id, uid, date, modality, n_dicom, "inferred"))
-                    conn.executemany(
                         "UPDATE files SET kind = ?, kind_source = ? WHERE id = ?",
-                        [("dicom", "inferred", fid) for fid, _ in candidates])
+                        (kind, "magic", fid))
+                    state = open_dirs[dir_id]
+                    state[2][fid] = (kind, uid, date, modality)
+                    state[1] -= 1
+                    if state[1] == 0:
+                        finish_dir(dir_id, "full", state[2], None, state[3])
+                        del open_dirs[dir_id]
+                        n_done += 1
                 else:
-                    # Read in full: group the real results into studies.
-                    n_dicom = len(dicom_reads)
-                    groups = {}
-                    for fid, (kind, uid, date, modality, _blob) in results.items():
-                        conn.execute(
-                            "UPDATE files SET kind = ?, kind_source = ? "
-                            "WHERE id = ?", (kind, "magic", fid))
-                        if kind == "dicom":
-                            groups.setdefault((uid, date, modality), 0)
-                            groups[(uid, date, modality)] += 1
-                    for (uid, date, modality), count in groups.items():
-                        conn.execute(
-                            "INSERT INTO studies(dir_id, study_uid, study_date,"
-                            " modality, slice_count, confidence) "
-                            "VALUES (?,?,?,?,?,?)",
-                            (dir_id, uid, date, modality, count, "counted"))
-
-                conn.execute(
-                    "INSERT OR REPLACE INTO dir_probe VALUES (?,?,?,?,?)",
-                    (dir_id, method, len(results), n_dicom, note))
-                n_done += 1
+                    dir_id, candidates = in_flight.pop(fut)
+                    method, results, note = fut.result()
+                    n_files_read += len(results)
+                    for f, r in results.items():
+                        if r[0] == "dicom" and r[4]:
+                            conn.execute(
+                                "INSERT OR REPLACE INTO dicom_meta VALUES (?,?,?)",
+                                (f, dir_id, r[4]))
+                        if method != "sampled":
+                            conn.execute(
+                                "UPDATE files SET kind = ?, kind_source = ? "
+                                "WHERE id = ?", (r[0], "magic", f))
+                    finish_dir(dir_id, method, results, note, candidates)
+                    n_done += 1
 
             now = time.time()
             if now - last_commit >= BATCH_SECONDS:
