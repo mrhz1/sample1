@@ -319,6 +319,7 @@ def build(args):
     conn.commit()
 
     studies = match_studies(conn, dir_code, dir_paths, reports, args)
+    write_matches(conn, studies, widths)
     suggestions = suggest(studies, reports)
     return dict(
         root=root, per_patient=per_patient, per_patient_bytes=per_patient_bytes,
@@ -380,7 +381,41 @@ def match_studies(conn, dir_code, dir_paths, reports, args):
                     modality=display_modality(modality) if modality else "",
                     raw_modality=modality or "", slices=0, confidence="",
                     report=name, status="report with no matching images"))
+
     return out
+
+
+MATCH_SCHEMA = """
+DROP TABLE IF EXISTS study_report;
+CREATE TABLE study_report (
+    study_id    INTEGER,        -- NULL for a report with no images
+    code        TEXT,
+    study_date  TEXT,
+    modality    TEXT,           -- raw DICOM code: MR, US, CR
+    slices      INTEGER,        -- DICOM files in the study
+    report      TEXT,           -- report file name, '' if none
+    status      TEXT NOT NULL,
+    folder      TEXT
+);
+CREATE INDEX study_report_code   ON study_report(code);
+CREATE INDEX study_report_status ON study_report(status);
+"""
+
+
+def write_matches(conn, out, widths):
+    """Mirror the match result into the database so it can be queried.
+
+    Codes are held internally as (prefix, number); store the display form so
+    the table can be joined against files.code without conversion.
+    """
+    conn.executescript(MATCH_SCHEMA)
+    conn.executemany(
+        "INSERT INTO study_report(study_id, code, study_date, modality,"
+        " slices, report, status, folder) VALUES (?,?,?,?,?,?,?,?)",
+        [(r["study_id"], fmt(r["code"], widths) or None, r["date"],
+          r["raw_modality"], r["slices"], r["report"], r["status"], r["dir"])
+         for r in out])
+    conn.commit()
 
 
 def suggest(studies, reports):
