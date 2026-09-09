@@ -27,6 +27,7 @@ import csv
 import json
 import sqlite3
 import sys
+import time
 from collections import Counter
 
 try:
@@ -124,9 +125,23 @@ def main():
     writer = csv.writer(out)
     writer.writerow(["code", "folder", "file"] + labels)
 
+    n_total = conn.execute(
+        "SELECT COUNT(*) FROM dicom_meta").fetchone()[0]
     seen = set()
     n = 0
+    n_seen = 0
+    t_started = t_last = time.time()
     for _fid, code, path, name, blob in conn.execute(sql, params):
+        n_seen += 1
+        if n_seen % 50000 == 0:
+            now = time.time()
+            if now - t_last >= 5.0:
+                rate = n_seen / max(now - t_started, 0.001)
+                eta = (n_total - n_seen) / rate / 60 if rate else 0
+                print(f"  {n_seen:,}/{n_total:,} headers "
+                      f"({100.0 * n_seen / max(n_total,1):.1f}%)  "
+                      f"eta~{eta:.1f} min", file=sys.stderr, flush=True)
+                t_last = now
         try:
             header = json.loads(blob)
         except Exception:

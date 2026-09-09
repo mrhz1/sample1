@@ -51,6 +51,7 @@ import os
 import re
 import sqlite3
 import sys
+import time
 from collections import Counter, defaultdict
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -252,7 +253,21 @@ def build(args):
         csv_writer = csv.writer(csv_fh)
         csv_writer.writerow(["code", "code_source", "kind", "size", "path"])
 
+    n_total = conn.execute("SELECT COUNT(*) FROM files").fetchone()[0]
+    n_seen = 0
+    t_started = t_last = time.time()
+
     for fid, did, name, ext, size, code, source, conflict in rows():
+        n_seen += 1
+        if n_seen % 50000 == 0:
+            now = time.time()
+            if now - t_last >= 5.0:
+                rate = n_seen / max(now - t_started, 0.001)
+                eta = (n_total - n_seen) / rate / 60 if rate else 0
+                print(f"  {n_seen:,}/{n_total:,} files "
+                      f"({100.0 * n_seen / max(n_total,1):.1f}%)  "
+                      f"eta~{eta:.1f} min", flush=True)
+                t_last = now
         kind = kind_of(ext, probed_kind.get(fid))
         kind_totals[kind] += 1
         full = os.path.join(dir_paths[did], name)
