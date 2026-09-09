@@ -84,6 +84,12 @@ def value_of(header, hex_tag):
         return ""
     value = item.get("Value")
     if not value:
+        # Binary elements (OB/OW/UN) carry base64 under InlineBinary, not
+        # Value. Returning "" made them look absent in --show while sitting
+        # in the JSON.
+        b64 = item.get("InlineBinary")
+        if b64:
+            return f"<binary, {len(b64) * 3 // 4} bytes>"
         return ""
     if len(value) == 1:
         v = value[0]
@@ -92,7 +98,54 @@ def value_of(header, hex_tag):
     return "\\".join(str(v) for v in value)
 
 
-def show_one(conn, which):
+def tag_sizes(conn, sample=2000):
+    """Which tags actually consume the database, measured not guessed."""
+    rows = conn.execute(
+        "SELECT json FROM dicom_meta LIMIT ?", (sample,)).fetchall()
+    if not rows:
+        print("no headers stored yet", file=sys.stderr)
+        return
+    total = 0
+    per_tag = {}
+    n_private = n_binary = 0
+    bytes_private = bytes_binary = 0
+    for (blob,) in rows:
+        total += len(blob)
+        try:
+            header = json.loads(blob)
+        except Exception:
+            continue
+        for tag, item in header.items():
+            size = len(json.dumps({tag: item}))
+            per_tag[tag] = per_tag.get(tag, 0) + size
+            # Odd group number means a private (vendor) tag.
+            if int(tag[:4], 16) % 2 == 1:
+                n_private += 1
+                bytes_private += size
+            if "InlineBinary" in item:
+                n_binary += 1
+                bytes_binary += size
+
+    n = len(rows)
+    print(f"sampled {n:,} headers, {total / 1e6:,.1f} MB "
+          f"({total / n:,.0f} bytes per header average)\n")
+    print(f"{'TAG':<10} {'MB':>8} {'% ':>6}  DESCRIPTION")
+    print("-" * 72)
+    for tag, size in sorted(per_tag.items(), key=lambda kv: -kv[1])[:20]:
+        print(f"{tag:<10} {size / 1e6:>8.2f} {100.0 * size / total:>5.1f}%  "
+              f"{describe(tag)[:40]}")
+    print()
+    print(f"private tags (odd group): {bytes_private / 1e6:>8.2f} MB  "
+          f"{100.0 * bytes_private / total:>5.1f}%  in {n_private:,} elements")
+    print(f"binary  (InlineBinary):   {bytes_binary / 1e6:>8.2f} MB  "
+          f"{100.0 * bytes_binary / total:>5.1f}%  in {n_binary:,} elements")
+    print()
+    keep = total - bytes_private - bytes_binary
+    print(f"dropping both would leave {keep / 1e6:,.1f} MB "
+          f"({100.0 * keep / total:.0f}% of current size)")
+
+
+def show_one(conn, which, full=False):
     """Print one stored header as tag / VR / description / value."""
     row = conn.execute(
         "SELECT m.file_id, f.name, d.path, m.json FROM dicom_meta m "
@@ -100,17 +153,50 @@ def show_one(conn, which):
         "WHERE m.file_id = ? OR f.name = ? LIMIT 1",
         (which if str(which).isdigit() else -1, which)).fetchone()
     if not row:
-        print(f"no stored header for {which!r}", file=sys.stderr)
+        # Distinguish "no such file" from "file known but never opened" - the
+        # second is the common case and means probe hasn't reached it, or it
+        # was probed by a version that skipped .dcm.
+        info = conn.execute(
+            "SELECT f.id, f.kind, f.kind_source, d.path, "
+            "       (SELECT COUNT(*) FROM dir_probe p WHERE p.dir_id = d.id) "
+            "  FROM files f JOIN dirs d ON d.id = f.dir_id "
+            " WHERE f.name = ? LIMIT 1", (which,)).fetchone()
+        if not info:
+            print(f"no file named {which!r} in the database - check the name, "
+                  f"or crawl hasn't reached it", file=sys.stderr)
+            return
+        fid, kind, ksrc, path, probed = info
+        print(f"file_id {fid} exists at {path}", file=sys.stderr)
+        print(f"  kind={kind!r} kind_source={ksrc!r}", file=sys.stderr)
+        if not probed:
+            print("  -> this folder has NOT been probed yet. Run probe.py.",
+                  file=sys.stderr)
+        elif kind == "dicom":
+            print("  -> folder was probed but no header was stored. If this is "
+                  "a .dcm file, it was probed by the old probe.py that skipped "
+                  "DICOM extensions. Re-probe this folder:", file=sys.stderr)
+            print("     DELETE FROM dir_probe WHERE dir_id IN (SELECT dir_id "
+                  "FROM files WHERE ext IN ('dcm','dicom','ima'));",
+                  file=sys.stderr)
+        else:
+            print(f"  -> probed, but identified as {kind!r}, not DICOM.",
+                  file=sys.stderr)
         return
     fid, name, path, blob = row
     header = json.loads(blob)
+    if full:
+        print(json.dumps(header, indent=2, ensure_ascii=False))
+        return
     print(f"# file_id {fid}  {path}/{name}")
     print(f"# {len(header)} tags stored\n")
     for tag in sorted(header):
         v = value_of(header, tag)
         vr = header[tag].get("vr", "")
         pretty = f"({tag[:4]},{tag[4:]})"
-        print(f"{pretty}  {vr:2}  {describe(tag)[:38]:<38} {str(v)[:60]}")
+        text = str(v)
+        if not full and len(text) > 70:
+            text = text[:70] + f"... ({len(text)} chars, use --raw)"
+        print(f"{pretty}  {vr:2}  {describe(tag)[:38]:<38} {text}")
 
 
 def main():
@@ -121,17 +207,33 @@ def main():
     ap.add_argument("--by", default="file", choices=["file", "study"])
     ap.add_argument("--code")
     ap.add_argument("--out")
+    ap.add_argument("--tag-sizes", action="store_true",
+                    help="report which tags consume the database, so you can "
+                         "see what is making it big before deciding to drop it")
+    ap.add_argument("--raw", action="store_true",
+                    help="with --show, print the stored JSON exactly as it is "
+                         "in the database, pretty-printed and untruncated")
     ap.add_argument("--show", metavar="FILE_ID_OR_NAME",
                     help="print one stored header in readable form, the way "
                          "pydicom shows it, instead of writing a CSV")
     args = ap.parse_args()
 
     conn = sqlite3.connect(args.db)
+    # probe.py creates dicom_meta. Without it there is nothing to extract, and
+    # a bare "no such table" would not say why.
+    if not conn.execute(
+            "SELECT 1 FROM sqlite_master WHERE type='table' AND name='dicom_meta'"
+    ).fetchone():
+        sys.exit("this database has no dicom_meta table yet - run probe.py "
+                 "first (pass 2); extract.py reads what probe stored.")
     if args.list_tags:
         list_tags(conn)
         return
+    if args.tag_sizes:
+        tag_sizes(conn)
+        return
     if args.show:
-        show_one(conn, args.show)
+        show_one(conn, args.show, args.raw)
         return
     if not args.tags:
         sys.exit("give --tags, or --list-tags to see what's available")

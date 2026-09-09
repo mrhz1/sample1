@@ -135,6 +135,11 @@ def sniff_magic(head):
 _bytes_lock = threading.Lock()
 _bytes_read = [0]
 
+# Set from the command line before any worker starts; read-only thereafter.
+SKIP_PRIVATE = [False]
+SKIP_BINARY = [False]
+BULK_VRS = {"OB", "OW", "OF", "OD", "OL", "OV", "UN"}
+
 
 def _count(n):
     with _bytes_lock:
@@ -172,6 +177,15 @@ def read_one(path, keep_full=True):
                 except Exception:
                     blob = None
                 return "dicomdir", None, None, None, blob
+            if SKIP_PRIVATE[0]:
+                ds.remove_private_tags()
+            if SKIP_BINARY[0]:
+                # Vendor blobs (CSA headers, icon images, overlays) are base64
+                # in DICOM JSON, which inflates them by a third. They are the
+                # usual reason a header is 10 KB instead of 2 KB.
+                for elem in list(ds):
+                    if elem.VR in BULK_VRS:
+                        del ds[elem.tag]
             blob = None
             if keep_full:
                 try:
@@ -253,6 +267,12 @@ def main():
     ap.add_argument("--workers", type=int, default=16)
     ap.add_argument("--sample", type=int, default=4)
     ap.add_argument("--force", action="store_true")
+    ap.add_argument("--skip-private", action="store_true",
+                    help="drop vendor private tags (odd group numbers) from "
+                         "stored headers - often most of the size")
+    ap.add_argument("--skip-binary", action="store_true",
+                    help="drop binary elements (OB/OW/UN etc). Their base64 "
+                         "encoding is a third bigger than the raw bytes")
     ap.add_argument("--metadata", default="all",
                     choices=["all", "sample", "none"],
                     help="all: read every DICOM and keep every header (default; "
@@ -263,6 +283,9 @@ def main():
                     help="stop after N directories and report throughput - "
                          "use this to time the share before the full run")
     args = ap.parse_args()
+
+    SKIP_PRIVATE[0] = args.skip_private
+    SKIP_BINARY[0] = args.skip_binary
 
     conn = sqlite3.connect(args.db)
     # Defaults are tuned for small transactions. This pass writes millions of
