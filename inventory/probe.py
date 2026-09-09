@@ -38,7 +38,8 @@ import sys
 import threading
 import time
 from collections import deque
-from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, wait
+from concurrent.futures import (FIRST_COMPLETED, ProcessPoolExecutor,
+                                ThreadPoolExecutor, wait)
 
 try:
     import pydicom
@@ -138,12 +139,16 @@ _bytes_read = [0]
 # Set from the command line before any worker starts; read-only thereafter.
 SKIP_PRIVATE = [False]
 SKIP_BINARY = [False]
+MAX_ELEMENT = [0]        # 0 = keep everything
+
+
+def _init_worker(skip_private, skip_binary, max_element):
+    """Seed a process-pool worker. Windows uses spawn(), so a fresh interpreter
+    starts with the module defaults and would silently ignore the flags."""
+    SKIP_PRIVATE[0] = skip_private
+    SKIP_BINARY[0] = skip_binary
+    MAX_ELEMENT[0] = max_element
 BULK_VRS = {"OB", "OW", "OF", "OD", "OL", "OV", "UN"}
-
-
-def _count(n):
-    with _bytes_lock:
-        _bytes_read[0] += n
 
 
 def read_one(path, keep_full=True):
@@ -159,11 +164,9 @@ def read_one(path, keep_full=True):
             head = fh.read(132)
             kind = sniff_magic(head)
             if kind != "dicom":
-                _count(len(head))
-                return kind, None, None, None, None
+                return kind, None, None, None, None, len(head)
             fh.seek(0)
             ds = pydicom.dcmread(fh, stop_before_pixels=True)
-            _count(fh.tell())
 
             # A DICOMDIR is an index, not an image: its DirectoryRecordSequence
             # holds one record per file in the folder, so its header can be
@@ -176,7 +179,7 @@ def read_one(path, keep_full=True):
                     blob = json.dumps(ds.to_json_dict()) if keep_full else None
                 except Exception:
                     blob = None
-                return "dicomdir", None, None, None, blob
+                return "dicomdir", None, None, None, blob, fh.tell()
             if SKIP_PRIVATE[0]:
                 ds.remove_private_tags()
             if SKIP_BINARY[0]:
@@ -185,6 +188,19 @@ def read_one(path, keep_full=True):
                 # usual reason a header is 10 KB instead of 2 KB.
                 for elem in list(ds):
                     if elem.VR in BULK_VRS:
+                        del ds[elem.tag]
+            if MAX_ELEMENT[0]:
+                # Catch-all for whatever is actually bloating the header,
+                # private or not: PerFrameFunctionalGroupsSequence on an
+                # enhanced multiframe file holds one item per frame and is
+                # standard, so VR-based rules miss it entirely. Drop any single
+                # element bigger than the cap and record which ones went.
+                for elem in list(ds):
+                    try:
+                        n = len(json.dumps(elem.to_json_dict(None, None)))
+                    except Exception:
+                        continue
+                    if n > MAX_ELEMENT[0]:
                         del ds[elem.tag]
             blob = None
             if keep_full:
@@ -199,9 +215,10 @@ def read_one(path, keep_full=True):
                 str(getattr(ds, "StudyDate", "") or "") or None,
                 str(getattr(ds, "Modality", "") or "") or None,
                 blob,
+                fh.tell(),
             )
     except Exception as exc:
-        return f"?error:{type(exc).__name__}", None, None, None, None
+        return f"?error:{type(exc).__name__}", None, None, None, None, 0
 
 
 def pick_sample(names, k):
@@ -247,6 +264,8 @@ def probe_dir(dir_path, candidates, sample_size, mode="all"):
     for name in sample:
         results[by_name[name]] = read_one(os.path.join(dir_path, name), keep_full)
 
+    for r in results.values():
+        _bytes_read[0] += r[5]
     kinds = {r[0] for r in results.values()}
     uids = {r[1] for r in results.values() if r[0] == "dicom"}
 
@@ -267,6 +286,16 @@ def main():
     ap.add_argument("--workers", type=int, default=16)
     ap.add_argument("--sample", type=int, default=4)
     ap.add_argument("--force", action="store_true")
+    ap.add_argument("--processes", type=int, default=0, metavar="N",
+                    help="read in N separate processes instead of threads. "
+                         "Building the JSON is CPU work that the GIL "
+                         "serialises, so this is what unlocks full network "
+                         "speed. Windows caps N at 61.")
+    ap.add_argument("--max-element", type=int, default=0, metavar="BYTES",
+                    help="drop any single element whose JSON exceeds BYTES "
+                         "(e.g. 20000). Catches huge standard sequences such "
+                         "as PerFrameFunctionalGroupsSequence that the "
+                         "private/binary filters do not")
     ap.add_argument("--skip-private", action="store_true",
                     help="drop vendor private tags (odd group numbers) from "
                          "stored headers - often most of the size")
@@ -286,6 +315,7 @@ def main():
 
     SKIP_PRIVATE[0] = args.skip_private
     SKIP_BINARY[0] = args.skip_binary
+    MAX_ELEMENT[0] = args.max_element
 
     conn = sqlite3.connect(args.db)
     # Defaults are tuned for small transactions. This pass writes millions of
@@ -347,7 +377,24 @@ def main():
             [dir_id] + list(SKIP_EXTS),
         ).fetchall()
 
-    with ThreadPoolExecutor(max_workers=args.workers) as pool:
+    # Threads are right when a task is pure waiting, but building the JSON is
+    # CPU work under the GIL: measured at 0.83 ms/file, one core caps the whole
+    # run near 1,200 files/s however many threads there are. Processes each get
+    # their own interpreter. Windows cannot wait on more than 61 of them.
+    if args.processes:
+        n_proc = args.processes
+        if os.name == "nt" and n_proc > 61:
+            print(f"note: Windows caps process pools at 61; using 61 not {n_proc}")
+            n_proc = 61
+        pool_ctx = ProcessPoolExecutor(
+            max_workers=n_proc, initializer=_init_worker,
+            initargs=(args.skip_private, args.skip_binary, args.max_element))
+        n_slots = n_proc
+    else:
+        pool_ctx = ThreadPoolExecutor(max_workers=args.workers)
+        n_slots = args.workers
+
+    with pool_ctx as pool:
         in_flight = {}
         queue = list(reversed(todo))
         pending = deque()      # (dir_id, file_id, full_path) not yet submitted
@@ -409,7 +456,7 @@ def main():
         while queue or in_flight or pending:
             # Keep exactly one bound on outstanding work, whether the unit is
             # a file or a directory, so one enormous folder can't flood memory.
-            slack = args.workers * (4 if read_by_file else 2)
+            slack = n_slots * (4 if read_by_file else 2)
             while len(in_flight) < slack and (queue or pending):
                 if read_by_file:
                     if not pending:
@@ -434,8 +481,9 @@ def main():
             for fut in done:
                 if read_by_file:
                     dir_id, fid = in_flight.pop(fut)
-                    kind, uid, date, modality, blob = fut.result()
+                    kind, uid, date, modality, blob, nbytes = fut.result()
                     n_files_read += 1
+                    _bytes_read[0] += nbytes
                     # Store the header now and keep only the four fields the
                     # study grouping needs. Holding every blob until the last
                     # file of a 50,000-slice folder lands would be gigabytes.
