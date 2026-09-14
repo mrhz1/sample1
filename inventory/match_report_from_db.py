@@ -33,7 +33,10 @@ Usage:
     --out PATH       Combined summary workbook (default match_report.xlsx).
     --results-dir D  Where the per-code workbooks go
                      (default: <out's folder>/results, as match_reports.py).
-    --code LIST      Only these codes, comma-separated. Default: all.
+    --prefix LIST    Only codes with these prefixes, comma-separated
+                     (e.g. --prefix AA). Default: all.
+    --code LIST      Only these exact codes, comma-separated
+                     (e.g. --code AA0006,AA0012). Default: all.
     --date-order X   Reading of ambiguous numeric dates: dmy (default) or mdy.
     --no-per-code    Write only the combined summary.
     --include-unassigned
@@ -43,6 +46,7 @@ Usage:
 
 import argparse
 import os
+import re
 import sqlite3
 import sys
 from collections import defaultdict
@@ -64,6 +68,12 @@ STATUS_NO_DATE_MATCH = "Same folder, no date/modality match - review manually"
 STATUS_NO_REPORT = "No PDF report found"
 STATUS_NO_IMAGES = "No DICOM images found"
 STATUS_UNASSIGNED = "No code in folder path - unassigned"
+
+
+def code_prefix(code):
+    """The letters in front of the number: AA0006 -> AA."""
+    m = re.match(r"[A-Za-z]+", code)
+    return m.group(0).upper() if m else ""
 
 
 def load_dirs(conn):
@@ -234,6 +244,7 @@ def main():
     ap.add_argument("--db", default="inventory.db")
     ap.add_argument("--out", default="match_report.xlsx")
     ap.add_argument("--results-dir", default=None)
+    ap.add_argument("--prefix", default=None)
     ap.add_argument("--code", default=None)
     ap.add_argument("--date-order", default="dmy", choices=["dmy", "mdy"])
     ap.add_argument("--no-per-code", action="store_true")
@@ -257,12 +268,21 @@ def main():
     studies, unassigned = collect_studies(conn, dirs)
     conn.close()
 
-    wanted = None
+    codes = set(studies) | set(reports)
+    filtered = False
+    if args.prefix:
+        wanted = {p.strip().upper() for p in args.prefix.split(",") if p.strip()}
+        codes = {c for c in codes if code_prefix(c) in wanted}
+        filtered = True
+        unknown = wanted - {code_prefix(c) for c in set(studies) | set(reports)}
+        if unknown:
+            print(f"warning: no codes with prefix {', '.join(sorted(unknown))} "
+                  "- run report.py --discover to see what is there",
+                  file=sys.stderr)
     if args.code:
         wanted = {c.strip().upper() for c in args.code.split(",") if c.strip()}
-    codes = set(studies) | set(reports)
-    if wanted is not None:
         codes = {c for c in codes if c.upper() in wanted}
+        filtered = True
 
     out_path = Path(args.out).resolve()
     results_dir = Path(args.results_dir) if args.results_dir \
@@ -287,7 +307,7 @@ def main():
             write_summary_sheet(result_path(results_dir, code), rows)
             n_files += 1
 
-    if args.include_unassigned and wanted is None:
+    if args.include_unassigned and not filtered:
         combined.extend(unassigned_rows(unassigned))
 
     write_summary_sheet(out_path, combined)

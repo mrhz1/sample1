@@ -133,6 +133,18 @@ except the last:
   --metadata all` (the default) it is exact; with `sample` or `none` some
   counts are inferred, and the script prints how many rows that affects.
 
+One prefix at a time, without disturbing the attribution in the database:
+
+```bash
+python match_report_from_db.py --db inventory.db --prefix AA \
+                               --out AA_match_report.xlsx --results-dir AA_results
+```
+
+Filter here, not by re-running `report.py --prefixes AA` - that rewrites
+attribution for the whole archive and would drop every AVDD and QQQ code on the
+floor. Attribute all the real prefixes once; narrow at this step. `--code
+AA0006,AA0012` narrows to exact codes the same way.
+
 Studies in folders with no code, and PDFs with no derivable code, have no
 per-code workbook to live in; they are counted in the run summary and belong on
 the master workbook's `Unassigned` sheet. `--include-unassigned` folds the
