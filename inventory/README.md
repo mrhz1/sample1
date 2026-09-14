@@ -55,6 +55,9 @@ python probe.py --db inventory.db --workers 32
 # 3. See which code prefixes actually exist, THEN attribute and report.
 python report.py --db inventory.db --discover
 python report.py --db inventory.db --prefixes AA,AVDD,QQQ --out master_report.xlsx
+
+# 4. Optional: the same facts in the old match_reports.py workbook format.
+python match_report_from_db.py --db inventory.db --out match_report.xlsx
 ```
 
 All three resume if interrupted - re-run the same command. Raise `--workers` on
@@ -101,6 +104,39 @@ If tier 2 is large, check `MODALITY_ALIASES` in `../match_reports.py` for a
 missing word. Testing surfaced exactly this: `XR` is absent, so every X-ray
 silently drops a tier. `report.py` imports that table rather than duplicating
 it, so a fix there applies to both tools.
+
+## The old `match_reports.py` format
+
+Whatever already reads `match_report.xlsx` and `results/<code>-results.xlsx`
+keeps working - `match_report_from_db.py` rebuilds exactly those files from the
+database instead of walking the share again:
+
+```bash
+python match_report_from_db.py --db inventory.db --out match_report.xlsx
+```
+
+Sheet name, header, column widths, frozen header row, status strings and
+per-code file naming are imported from `match_reports.py`, not copied, so the
+two cannot drift. It runs in seconds, so a fix to the matching rules is a
+re-run, not another crawl.
+
+Three things differ from running `match_reports.py` itself, all in your favour
+except the last:
+
+* **Reports are found anywhere in the archive**, not just under a matching
+  folder in a separate reports root. On the test archive this turned nine
+  "no report found" rows into matches - the PDFs were sitting in the image
+  folders.
+* **Codes are normalised**, so `AA006` and `AA0006` are one patient with one
+  file, not two.
+* **DICOM File Count comes from the `studies` table.** With `probe.py
+  --metadata all` (the default) it is exact; with `sample` or `none` some
+  counts are inferred, and the script prints how many rows that affects.
+
+Studies in folders with no code, and PDFs with no derivable code, have no
+per-code workbook to live in; they are counted in the run summary and belong on
+the master workbook's `Unassigned` sheet. `--include-unassigned` folds the
+studies into the combined summary anyway, with an empty `Code`.
 
 ## Prefixes: always run `--discover` first
 
