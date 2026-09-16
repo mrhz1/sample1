@@ -226,6 +226,10 @@ def rows_for_code(code, code_studies, code_reports):
             STATUS_NO_IMAGES,
         ])
         stats["unmatched_pdf"] += 1
+        # No date means it can never match a study - a consent form or a
+        # manual, not a report whose images are missing.
+        if not date:
+            stats["undated_pdf"] += 1
 
     return rows, stats
 
@@ -322,7 +326,9 @@ def main():
         cov_detail[code][coverage.MATCHED] += stats["matched"]
         cov_detail[code][coverage.UNMATCHED] += (
             stats["ambiguous"] + stats["unmatched_images"])
-        cov_detail[code][coverage.ORPHAN] += stats["unmatched_pdf"]
+        cov_detail[code][coverage.ORPHAN] += (
+            stats["unmatched_pdf"] - stats["undated_pdf"])
+        cov_detail[code][coverage.UNDATED] += stats["undated_pdf"]
         combined.extend(rows)
         if not args.no_per_code:
             write_summary_sheet(result_path(results_dir, code), rows)
@@ -339,12 +345,13 @@ def main():
     cov_rows, _, _ = coverage.classify(conn, cov_detail)
     conn.close()
     cov_rows = [r for r in cov_rows if keep(r[0])]
-    cov_summary = Counter(r[7] for r in cov_rows)
+    cov_summary = Counter(r[8] for r in cov_rows)
     cov_totals = Counter()
     for r in cov_rows:
-        cov_totals[coverage.MATCHED] += r[4]
-        cov_totals[coverage.UNMATCHED] += r[5]
-        cov_totals[coverage.ORPHAN] += r[6]
+        cov_totals[coverage.UNDATED] += r[3]
+        cov_totals[coverage.MATCHED] += r[5]
+        cov_totals[coverage.UNMATCHED] += r[6]
+        cov_totals[coverage.ORPHAN] += r[7]
 
     print(f"wrote {out_path}  ({len(combined):,} rows)")
     if not args.no_per_code:
@@ -353,7 +360,11 @@ def main():
           f"matched: {totals['matched']:,}   "
           f"no date/modality match: {totals['ambiguous']:,}")
     print(f"  studies with no report: {totals['unmatched_images']:,}   "
-          f"reports with no images: {totals['unmatched_pdf']:,}")
+          f"reports with no images: "
+          f"{totals['unmatched_pdf'] - totals['undated_pdf']:,}")
+    if totals["undated_pdf"]:
+        print(f"  {totals['undated_pdf']:,} PDFs have no date in the name - "
+              "listed, but probably not study reports")
     if totals["inferred_rows"]:
         print(f"  NOTE: {totals['inferred_rows']:,} rows have a DICOM File "
               "Count inferred from a sample, not counted.\n"

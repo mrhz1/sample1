@@ -42,12 +42,13 @@ BUCKETS = [IMAGES_ONLY, REPORTS_ONLY, PARTIAL, COMPLETE, NEITHER]
 MATCHED = "studies with a report"
 UNMATCHED = "studies with no report"
 ORPHAN = "reports with no images"
-DETAIL = [MATCHED, UNMATCHED, ORPHAN]
+UNDATED = "other PDFs (not reports)"
+DETAIL = [MATCHED, UNMATCHED, ORPHAN, UNDATED]
 
-HEADER = ["Patient Code", "DICOM Files", "Report Files", "Studies",
-          "Studies w/ Report", "Studies w/o Report", "Reports w/o Images",
-          "Category"]
-WIDTHS = (14, 12, 12, 9, 17, 18, 18, 18)
+HEADER = ["Patient Code", "DICOM Files", "Report Files", "Other PDFs",
+          "Studies", "Studies w/ Report", "Studies w/o Report",
+          "Reports w/o Images", "Category"]
+WIDTHS = (14, 12, 12, 11, 9, 17, 18, 18, 26)
 
 
 def new_detail():
@@ -90,15 +91,19 @@ def classify(conn, detail=None):
         n_dicom, n_pdf = kinds.get("dicom", 0), kinds.get("pdf", 0)
         d = detail.get(code, Counter())
         matched, unmatched = d.get(MATCHED, 0), d.get(UNMATCHED, 0)
-        orphans = d.get(ORPHAN, 0)
-        bucket = bucket_of(n_dicom, n_pdf, unmatched, orphans)
+        orphans, undated = d.get(ORPHAN, 0), d.get(UNDATED, 0)
+        # A consent form or a manual is a PDF, not a report, so it must not
+        # make a patient look reported.
+        n_reports = max(n_pdf - undated, 0)
+        bucket = bucket_of(n_dicom, n_reports, unmatched, orphans)
         summary[bucket] += 1
         totals[MATCHED] += matched
         totals[UNMATCHED] += unmatched
         totals[ORPHAN] += orphans
-        rows.append([code, n_dicom, n_pdf, studies.get(code, 0),
+        totals[UNDATED] += undated
+        rows.append([code, n_dicom, n_reports, undated, studies.get(code, 0),
                      matched, unmatched, orphans, bucket])
-    rows.sort(key=lambda r: (order[r[7]], r[0]))
+    rows.sort(key=lambda r: (order[r[8]], r[0]))
     return rows, summary, totals
 
 
@@ -152,8 +157,8 @@ def write_workbook(rows, summary, totals, path):
         cell.font = Font(bold=True)
     for row in rows:
         ws.append(row)
-    for letter, width in zip("ABCDEFGH", WIDTHS):
+    for letter, width in zip("ABCDEFGHI", WIDTHS):
         ws.column_dimensions[letter].width = width
     ws.freeze_panes = "A2"
-    ws.auto_filter.ref = f"A1:H{ws.max_row}"
+    ws.auto_filter.ref = f"A1:I{ws.max_row}"
     wb.save(path)

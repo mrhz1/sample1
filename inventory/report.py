@@ -86,6 +86,7 @@ from probe import KNOWN_EXTS  # noqa: E402
 STATUS_BOTH = "report and image"
 STATUS_IMAGE_ONLY = "only image"
 STATUS_REPORT_ONLY = "only report"
+STATUS_OTHER_PDF = "other pdf"          # a PDF that is not a study report
 STATUS_NEITHER = "no report or image"   # patient-level only; no study can be it
 
 NOTE_DATE_MODALITY = "matched on date + modality"
@@ -94,6 +95,7 @@ NOTE_NO_DATE_MATCH = "patient has other reports, none for this date"
 NOTE_NO_REPORT = "no report anywhere for this patient"
 NOTE_UNASSIGNED = "folder carries no code - see Suggestions"
 NOTE_NO_IMAGES = "no images found for this report"
+NOTE_NO_DATE = "no date in the file name - probably not a study report"
 
 KIND_COLUMNS = ["dicom", "dicomdir", "pdf", "word", "excel", "slides", "image",
                 "video", "archive", "program", "text", "office", "unknown",
@@ -439,13 +441,20 @@ def match_studies(conn, dir_code, dir_paths, reports, args):
     for code, items in reports.items():
         for path, date, modality, name in items:
             if path not in used[code]:
+                # A report carries a date; a consent form or a manual filed in
+                # the same folder does not, and can never match a study. Saying
+                # "no images found" about HELP.pdf sends someone looking for
+                # images that were never meant to exist.
+                if date:
+                    status, note = STATUS_REPORT_ONLY, NOTE_NO_IMAGES
+                else:
+                    status, note = STATUS_OTHER_PDF, NOTE_NO_DATE
                 out.append(dict(
                     study_id=None, code=code, dir=os.path.dirname(path),
                     date=date or "",
                     modality=display_modality(modality) if modality else "",
                     raw_modality=modality or "", slices=0, confidence="",
-                    report=name, status=STATUS_REPORT_ONLY,
-                    note=NOTE_NO_IMAGES))
+                    report=name, status=status, note=note))
 
     return out
 
@@ -566,7 +575,9 @@ def write_workbook(data, out_path):
         if not s_["code"]:
             continue
         code = fmt(s_["code"], W)
-        if s_["status"] == STATUS_REPORT_ONLY:
+        if s_["status"] == STATUS_OTHER_PDF:
+            cov_detail[code][coverage.UNDATED] += 1
+        elif s_["status"] == STATUS_REPORT_ONLY:
             cov_detail[code][coverage.ORPHAN] += 1
         elif s_["status"] == STATUS_BOTH:
             cov_detail[code][coverage.MATCHED] += 1

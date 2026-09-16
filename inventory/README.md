@@ -101,6 +101,7 @@ filtered on without knowing every phrasing of the reason:
 | `report and image` | both present |
 | `only image` | images, no report paired with them |
 | `only report` | a report whose images are missing |
+| `other pdf` | a PDF with no date in its name - a consent form, a manual, `HELP.pdf`. Listed, but not chased |
 
 (`no report or image` completes the set, but no *study* row can be it - a
 patient with neither appears on `Coverage`.)
@@ -113,8 +114,16 @@ patient with neither appears on `Coverage`.)
   5  only report        | no images found for this report
   4  only image         | folder carries no code - see Suggestions
   3  only image         | patient has other reports, none for this date
+  2  other pdf          | no date in the file name - probably not a study report
   1  only image         | no report anywhere for this patient
 ```
+
+Not every PDF in a patient folder is a report. A report carries a date in its
+name; a consent form or a leaflet does not, and so can never match a study.
+Calling those `only report / no images found` sends someone hunting for images
+that were never meant to exist, so they get their own status and are kept out
+of the report counts - `Coverage` shows them in an `Other PDFs` column, and a
+patient whose only PDF is one of these is not counted as reported.
 
 A large `matched on date only` count means the modality word in those report
 filenames could not be mapped - check `MODALITY_ALIASES` in
