@@ -39,16 +39,18 @@ NEITHER = "no report or image"
 BUCKETS = [IMAGES_ONLY, REPORTS_ONLY, PARTIAL, COMPLETE, NEITHER]
 
 # What the caller counts per patient.
-MATCHED = "studies with a report"
-UNMATCHED = "studies with no report"
-ORPHAN = "reports with no images"
-UNDATED = "other PDFs (not reports)"
+MATCHED = "report and image"
+UNMATCHED = "only image"
+ORPHAN = "only report"
+UNDATED = "other pdf"
 DETAIL = [MATCHED, UNMATCHED, ORPHAN, UNDATED]
 
+# Every count column is named for the Status value it counts, so a number here
+# and the rows behind it on the Studies sheet are found with the same phrase.
 HEADER = ["Patient Code", "DICOM Files", "Report Files", "Other PDFs",
-          "Studies", "Studies w/ Report", "Studies w/o Report",
-          "Reports w/o Images", "Category"]
-WIDTHS = (14, 12, 12, 11, 9, 17, 18, 18, 26)
+          "Studies", "Report and Image", "Only Image", "Only Report",
+          "Category"]
+WIDTHS = (14, 12, 12, 11, 9, 17, 12, 12, 26)
 
 
 def new_detail():
@@ -109,26 +111,26 @@ def classify(conn, detail=None):
 
 def summary_lines(summary, totals=None):
     """The buckets, then the study-level totals, as (label, value) pairs."""
-    lines = [(f"Patients {name}", summary.get(name, 0)) for name in BUCKETS]
+    lines = [(f"Patients: {name}", summary.get(name, 0)) for name in BUCKETS]
     lines.append(("Patients total", sum(summary.values())))
     if totals:
         lines.append(("", ""))
-        lines += [(f"Total {name}", totals.get(name, 0)) for name in DETAIL]
+        lines += [(f"Rows: {name}", totals.get(name, 0)) for name in DETAIL]
     return lines
 
 
 def print_summary(summary, totals=None, indent="  "):
     total = sum(summary.values())
-    width = max(len(n) for n in BUCKETS + DETAIL) + 14
+    width = max(len(n) for n in BUCKETS + DETAIL) + 12
     for name in BUCKETS:
         n = summary.get(name, 0)
         pct = f"{100.0 * n / total:.1f}%" if total else "-"
-        print(f"{indent}{'patients ' + name:<{width}} {n:>8,}  {pct:>6}")
+        print(f"{indent}{'patients: ' + name:<{width}} {n:>8,}  {pct:>6}")
     print(f"{indent}{'patients total':<{width}} {total:>8,}")
     if totals:
         print()
         for name in DETAIL:
-            print(f"{indent}{name:<{width}} {totals.get(name, 0):>8,}")
+            print(f"{indent}{'rows: ' + name:<{width}} {totals.get(name, 0):>8,}")
 
 
 def write_workbook(rows, summary, totals, path):

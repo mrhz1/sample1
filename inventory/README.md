@@ -139,13 +139,23 @@ report whose images never arrived - all three at once. Every row carries the
 counts behind its label:
 
 ```
-Patient Code  DICOM  Reports  Studies  w/ Report  w/o Report  Reports w/o Images  Category
-AA0050            2        0        1          0           1                   0  images, no report
-AA0051            0        1        0          0           0                   1  report, no images
-AA0006           52        2        2          1           1                   1  partly covered
-AA0009           12        1        1          1           0                   0  fully covered
-AA0052            0        0        0          0           0                   0  neither
+Patient Code  DICOM  Report Files  Other PDFs  Studies  Report and Image  Only Image  Only Report  Category
+AA0050            2             0           0        1                 0           1            0  only image
+AA0051            0             1           0        0                 0           0            1  only report
+AA0006           52             2           1        2                 1           1            1  report and image (partial)
+AA0009           12             1           0        1                 1           0            0  report and image (complete)
+AA0052            0             0           0        0                 0           0            0  no report or image
 ```
+
+Every count column is named for the `Status` value it counts. `Only Image` = 1
+for AA0006 means filtering `Status = only image` on the `Studies` sheet finds
+exactly that one row - the number and the rows behind it share a phrase, so
+there is nothing to translate between sheets.
+
+`Studies` = `Report and Image` + `Only Image`. The other two columns count
+**PDFs**, not studies, which is why they sit outside that total: a row with no
+images cannot be a study. On the `Studies` sheet those rows show `DICOM
+Files = 0`.
 
 | label | means |
 |---|---|
@@ -160,12 +170,13 @@ The counts also appear on `Overview`, and `match_report_from_db.py` prints them
 at the end of every run, with the study-level totals underneath:
 
 ```
-  patients partly covered                     6   42.9%
-  patients fully covered                      5   35.7%
+  patients: report and image (partial)        6   42.9%
+  patients: report and image (complete)       5   35.7%
   ...
-  studies with a report                      14
-  studies with no report                      4
-  reports with no images                      5
+  rows: report and image                     14
+  rows: only image                            4
+  rows: only report                           5
+  rows: other pdf                             2
 ```
 
 Add `--coverage patients.xlsx` there for the per-patient detail as its own

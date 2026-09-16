@@ -610,10 +610,13 @@ def write_workbook(data, out_path):
         ("  attributed to a patient", len(assigned)),
         ("  NOT attributed (see Unassigned)", len(real) - len(assigned)),
         ("", ""),
-        ("Studies with a matching report", len(with_report)),
-        ("Studies without a report", len(assigned) - len(with_report)),
-        ("Reports with no matching images",
+        (f"Studies '{STATUS_BOTH}'", len(with_report)),
+        (f"Studies '{STATUS_IMAGE_ONLY}' (no report paired)",
+         len(assigned) - len(with_report)),
+        (f"PDFs '{STATUS_REPORT_ONLY}' (no images paired)",
          sum(1 for s in studies if s["status"] == STATUS_REPORT_ONLY)),
+        (f"PDFs '{STATUS_OTHER_PDF}' (no date - not reports)",
+         sum(1 for s in studies if s["status"] == STATUS_OTHER_PDF)),
         ("", ""),
         ("Patients with at least one study", len(studies_by_code)),
         ("Patients where every study has a report",
@@ -629,8 +632,8 @@ def write_workbook(data, out_path):
     ws.auto_filter.ref = None
 
     header = (["Patient Code"] + [k.upper() for k in KIND_COLUMNS]
-              + ["Total Files", "Total Size", "Studies", "Studies w/ Report",
-                 "Studies w/o Report"])
+              + ["Total Files", "Total Size", "Studies", "Report and Image",
+                 "Only Image"])
     widths = [14] + [9] * len(KIND_COLUMNS) + [12, 13, 9, 17, 18]
     rows = []
     for code in patients + (["UNASSIGNED"] if "UNASSIGNED" in data["per_patient"] else []):
