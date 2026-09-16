@@ -3,9 +3,9 @@
 Answers "what exactly does AA0001 have?" in a single row rather than across
 several sheets:
 
-    AA0001   400 image files have a report, covered by 3 PDFs
-             200 image files have no report
-             4 reports have no images | 10 other files
+    AA0001   600 DICOM images, 7 PDFs
+             400 DICOMs have a report, 200 do not
+             3 reports have no DICOM | 610 files, 1.2 GB
 
 The counts here are **DICOM files**, not studies. master_report.xlsx counts
 studies, because that is the unit a report is written about; this counts the
@@ -49,14 +49,13 @@ S_OTHER = "other pdf"
 # work with the archive daily, and "DICOMs w/o Report" means nothing to them.
 HEADER = [
     ("Patient Code", 14),
-    ("Image Files That Have a Report", 19),
-    ("Reports Covering Those Images", 19),
-    ("Image Files With No Report", 19),
-    ("Reports With No Images", 18),
-    ("Other PDFs (Not Reports)", 17),
-    ("Other Files", 12),
-    ("Image Files Not In Any Study", 19),
-    ("Total Files", 12),
+    ("Total DICOM Images", 17),
+    ("Total PDFs", 12),
+    ("DICOMs With a Report", 18),
+    ("DICOMs With No Report", 18),
+    ("Reports With No DICOM", 18),
+    ("Other PDFs", 12),
+    ("Total Files (All Types)", 18),
     ("Total Size", 13),
 ]
 
@@ -82,7 +81,8 @@ def collect(conn):
         return rows.setdefault(code, {
             "dicom_reported": 0, "reports_covering": set(),
             "dicom_unreported": 0, "reports_orphan": 0, "other_pdf": 0,
-            "other_files": 0, "dicom_files": 0, "total_files": 0, "size": 0})
+            "other_files": 0, "dicom_files": 0, "pdf_files": 0,
+            "total_files": 0, "size": 0})
 
     for code, status, slices, report in conn.execute(
             "SELECT code, status, slices, report FROM study_report"
@@ -107,23 +107,23 @@ def collect(conn):
         r["size"] += size
         if kind == "dicom":
             r["dicom_files"] += n
-        elif kind != "pdf":
+        elif kind == "pdf":
+            r["pdf_files"] += n
+        else:
             r["other_files"] += n
     return rows
 
 
 def build_rows(rows):
+    """Totals first, then the split - so a reader can see the whole before
+    the parts, and spot it when the parts do not add up to it."""
     out = []
     for code in sorted(rows):
         r = rows[code]
-        # Every DICOM attributed to this patient that no study accounts for -
-        # a header probe.py could not read, or a file in a folder it never
-        # grouped. Shown rather than absorbed, so the columns reconcile.
-        loose = r["dicom_files"] - r["dicom_reported"] - r["dicom_unreported"]
-        out.append([code, r["dicom_reported"], len(r["reports_covering"]),
-                    r["dicom_unreported"], r["reports_orphan"], r["other_pdf"],
-                    r["other_files"], max(loose, 0), r["total_files"],
-                    human_bytes(r["size"])])
+        out.append([code, r["dicom_files"], r["pdf_files"],
+                    r["dicom_reported"], r["dicom_unreported"],
+                    r["reports_orphan"], r["other_pdf"],
+                    r["total_files"], human_bytes(r["size"])])
     return out
 
 
@@ -222,17 +222,17 @@ def main():
                data)
     # Anything outstanding on a row is worth the eye landing on it.
     for row in ws.iter_rows(min_row=2):
-        if (row[3].value or 0) or (row[4].value or 0) or (row[7].value or 0):
+        if (row[4].value or 0) or (row[5].value or 0):
             for cell in row:
                 cell.fill = WARN_FILL
     wb.save(args.out)
 
     print(f"wrote {args.out}")
     print(f"  {len(data):,} patients")
-    print(f"  {sum(r[1] for r in data):,} image files have a report, "
-          f"{sum(r[3] for r in data):,} do not")
-    print(f"  {sum(r[4] for r in data):,} reports with no images, "
-          f"{sum(r[6] for r in data):,} other files")
+    print(f"  {sum(r[3] for r in data):,} DICOMs have a report, "
+          f"{sum(r[4] for r in data):,} do not")
+    print(f"  {sum(r[5] for r in data):,} reports with no DICOM, "
+          f"{sum(r[6] for r in data):,} other PDFs")
 
 
 if __name__ == "__main__":

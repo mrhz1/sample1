@@ -230,11 +230,11 @@ python patient_summary.py --db inventory.db --out patient_summary.xlsx
 ```
 
 ```
-Patient  Image Files That  Reports Covering  Image Files With  Reports With  Other PDFs     Other
-         Have a Report     Those Images      No Report         No Images     (Not Reports)  Files
-AA0003                 90                 1                40             0              0      0
-AA0006                 12                 1                40             1              1      3
-AVDD004                52                 2                40             0              0      2
+Patient  Total DICOM  Total  DICOMs With  DICOMs With  Reports With  Other  Total Files  Total
+Code          Images   PDFs    a Report     No Report      No DICOM   PDFs  (All Types)   Size
+AA0003           130      1          90            40             0      0          131  27.7 KB
+AA0006            52      3          12            40             1      1           58  11.2 KB
+AVDD004           92      2          52            40             0      0           96  19.7 KB
 ```
 
 Headings are spelled out rather than abbreviated, because this is the file that
@@ -250,12 +250,20 @@ people mean when they ask how much is outstanding.
 `Reports Covering Them` is how many distinct PDFs account for the reported
 side: one report can cover 400 slices, or several can.
 
-`Image Files Not In Any Study` catches any DICOM attributed to the patient that
-no study accounts for - a header `probe.py` could not read. It is normally 0,
-and it is shown rather than absorbed so the columns add up: the three image
-columns total exactly the patient's DICOM file count, and that plus the PDFs
-plus `Other Files` is `Total Files`. Rows with anything outstanding are
-shaded.
+Totals come first, then the split, so the parts can be checked against the
+whole at a glance:
+
+* `DICOMs With a Report` + `DICOMs With No Report` = `Total DICOM Images`
+* `Total Files (All Types)` counts everything attributed to the patient -
+  images, PDFs, Word, video, anything else - so the difference from the two
+  totals beside it is the non-image non-PDF material.
+
+If the first of those does not add up, the missing files are DICOMs that no
+study accounts for, usually a header `probe.py` could not read. `Overview`
+carries that number as `Image files not in any study`; it is normally 0.
+
+Rows with anything outstanding - DICOMs with no report, or reports with no
+DICOM - are shaded.
 
 It reads the matching `report.py` already wrote to `study_report`, so nothing
 is re-matched and the two files cannot disagree - which does mean `report.py`
