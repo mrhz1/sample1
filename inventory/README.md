@@ -76,7 +76,7 @@ to have in an inventory.
 | `Patients` | patient code | file counts by type, size, studies with/without a report |
 | `Studies` | study | date, modality, slice count, matched report, match tier |
 | `Unassigned` | folder | files with no derivable code - **the work queue** |
-| `Coverage` | patient code | images only / report only / both / neither |
+| `Coverage` | patient code | images / reports / both, and what is missing |
 | `Suggestions` | orphan study | candidate codes recovered by cross-referencing reports |
 | `Conflicts` | file | filename and folder disagree about the code |
 
@@ -108,33 +108,49 @@ it, so a fix there applies to both tools.
 
 ## Who has what: the `Coverage` sheet
 
-Four buckets, mutually exclusive, every attributed patient in exactly one:
+A patient is rarely all-or-nothing, so one label per patient is not enough.
+`AA0006` below has a study with a report, a second study with none, **and** a
+report whose images never arrived - all three at once. Every row carries the
+counts behind its label:
 
-| bucket | means |
+```
+Patient Code  DICOM  Reports  Studies  w/ Report  w/o Report  Reports w/o Images  Category
+AA0050            2        0        1          0           1                   0  images, no report
+AA0051            0        1        0          0           0                   1  report, no images
+AA0006           52        2        2          1           1                   1  partly covered
+AA0009           12        1        1          1           0                   0  fully covered
+AA0052            0        0        0          0           0                   0  neither
+```
+
+| label | means |
 |---|---|
-| `images, no report` | scanned, nothing reported yet |
-| `report, no images` | reported, but the images are missing or filed somewhere no code could be derived from |
-| `images and report` | complete |
+| `images, no report` | no report anywhere for this patient |
+| `report, no images` | reported, but no DICOM file is attributed to them |
+| `partly covered` | has both, but some study has no report or some report has no images - **the three columns say which** |
+| `fully covered` | every study has a report and every report has images |
 | `neither` | a code folder holding neither - only Word/Excel files, stray litter, or nothing at all |
 
+Sort or filter on `Category` for the roll-up; read the columns for the detail.
 The counts also appear on `Overview`, and `match_report_from_db.py` prints them
-at the end of every run:
+at the end of every run, with the study-level totals underneath:
 
 ```
-  patients with images, no report        1    7.1%
-  patients with report, no images        1    7.1%
-  patients with images and report       11   78.6%
-  patients with neither                  1    7.1%
-  patients total                        14
+  patients partly covered                     6   42.9%
+  patients fully covered                      5   35.7%
+  ...
+  studies with a report                      14
+  studies with no report                      4
+  reports with no images                      5
 ```
 
-Add `--coverage patients.xlsx` there to get the per-patient detail behind those
-numbers as its own workbook - a `Summary` sheet and a `Patients` sheet. It is a
-separate file on purpose: `match_report.xlsx` reproduces `match_reports.py`
-exactly, and anything reading it expects one sheet with six known columns.
+Add `--coverage patients.xlsx` there for the per-patient detail as its own
+workbook. It is a separate file on purpose: `match_report.xlsx` reproduces
+`match_reports.py` exactly, and anything reading it expects one sheet with six
+known columns.
 
-Both tools import `coverage.py`, so the two can't drift apart, and `--prefix`
-narrows the coverage numbers the same way it narrows the workbook.
+The per-study verdicts come from each tool's own matching rather than from
+`coverage.py`, so a coverage row can never contradict the sheet next to it -
+`AA0006` above is the same three rows the workbook shows for that patient.
 
 **"Has images" means at least one file identified as DICOM, not at least one
 study.** A folder whose headers could not be parsed still holds images;

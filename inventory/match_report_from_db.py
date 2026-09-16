@@ -273,10 +273,12 @@ def main():
     dirs = load_dirs(conn)
     reports, orphan_reports = collect_reports(conn, dirs, args.date_order)
     studies, unassigned = collect_studies(conn, dirs)
-    cov_rows, _ = coverage.classify(conn)
-    conn.close()
+    # Every attributed code, including patients with neither images nor
+    # reports - they have no workbook rows but still belong in the coverage.
+    db_codes = {c for (c,) in conn.execute(
+        "SELECT DISTINCT code FROM files WHERE code IS NOT NULL")}
 
-    all_codes = set(studies) | set(reports) | {r[0] for r in cov_rows}
+    all_codes = set(studies) | set(reports) | db_codes
     prefix_set = code_set = None
     if args.prefix:
         prefix_set = {p.strip().upper() for p in args.prefix.split(",") if p.strip()}
@@ -305,6 +307,7 @@ def main():
         results_dir.mkdir(parents=True, exist_ok=True)
 
     combined = []
+    cov_detail = coverage.new_detail()
     totals = defaultdict(int)
     n_files = 0
     # Sorted by the per-code file name, so the combined sheet comes out in the
@@ -316,6 +319,10 @@ def main():
             continue
         for key, value in stats.items():
             totals[key] += value
+        cov_detail[code][coverage.MATCHED] += stats["matched"]
+        cov_detail[code][coverage.UNMATCHED] += (
+            stats["ambiguous"] + stats["unmatched_images"])
+        cov_detail[code][coverage.ORPHAN] += stats["unmatched_pdf"]
         combined.extend(rows)
         if not args.no_per_code:
             write_summary_sheet(result_path(results_dir, code), rows)
@@ -327,9 +334,17 @@ def main():
     write_summary_sheet(out_path, combined)
 
     # Same filter as the workbook, so the two files always describe the same
-    # set of patients.
+    # set of patients. A patient with neither images nor reports has no rows
+    # in the workbook, so this filters on the user's filter, not on `codes`.
+    cov_rows, _, _ = coverage.classify(conn, cov_detail)
+    conn.close()
     cov_rows = [r for r in cov_rows if keep(r[0])]
-    cov_summary = Counter(r[4] for r in cov_rows)
+    cov_summary = Counter(r[7] for r in cov_rows)
+    cov_totals = Counter()
+    for r in cov_rows:
+        cov_totals[coverage.MATCHED] += r[4]
+        cov_totals[coverage.UNMATCHED] += r[5]
+        cov_totals[coverage.ORPHAN] += r[6]
 
     print(f"wrote {out_path}  ({len(combined):,} rows)")
     if not args.no_per_code:
@@ -350,9 +365,10 @@ def main():
         print(f"  skipped {orphan_reports:,} PDFs with no derivable code")
 
     print()
-    coverage.print_summary(cov_summary)
+    coverage.print_summary(cov_summary, cov_totals)
     if args.coverage:
-        coverage.write_workbook(cov_rows, cov_summary, args.coverage)
+        coverage.write_workbook(cov_rows, cov_summary, cov_totals,
+                                args.coverage)
         print(f"\n  patient coverage detail: {args.coverage}")
 
 

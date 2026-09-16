@@ -542,7 +542,20 @@ def write_workbook(data, out_path):
     wb.remove(wb.active)
     W = data["widths"]
 
-    cov_rows, cov_summary = coverage.classify(data["conn"])
+    # Per-patient verdicts from this tool's own matching, so the Coverage
+    # sheet and the Studies sheet can never disagree.
+    cov_detail = coverage.new_detail()
+    for s_ in data["studies"]:
+        if not s_["code"]:
+            continue
+        code = fmt(s_["code"], W)
+        if s_["status"] == "report with no matching images":
+            cov_detail[code][coverage.ORPHAN] += 1
+        elif s_["status"].startswith("matched"):
+            cov_detail[code][coverage.MATCHED] += 1
+        else:
+            cov_detail[code][coverage.UNMATCHED] += 1
+    cov_rows, cov_summary, cov_totals = coverage.classify(data["conn"], cov_detail)
 
     studies = data["studies"]
     real = [s for s in studies if s["study_id"] is not None]
@@ -574,7 +587,7 @@ def write_workbook(data, out_path):
         ("Patients where every study has a report",
          sum(1 for c in studies_by_code if reported_by_code[c] == studies_by_code[c])),
         ("", ""),
-    ] + coverage.summary_lines(cov_summary) + [
+    ] + coverage.summary_lines(cov_summary, cov_totals) + [
         ("", ""),
         ("Filename/folder code conflicts", len(data["conflicts"])),
         ("PDFs with no patient code at all", len(data["orphan_reports"])),

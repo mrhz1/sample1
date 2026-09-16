@@ -1,17 +1,24 @@
-"""Which patients have images, reports, both, or neither.
+"""Which patients have images, reports, both, or neither - and where a patient
+is only partly covered, exactly which part is missing.
 
-Four buckets, mutually exclusive, every attributed patient in exactly one:
+A patient is rarely all-or-nothing. AA0006 can have one study with a report,
+a second study with none, and a third report whose images never arrived. A
+single label per patient hides that, so every row carries the three counts
+behind it and the label only says whether they are all accounted for:
 
-    images, no report    images arrived, nothing has been reported yet
-    report, no images    a report exists but the images are missing or
-                         filed under a folder no code could be derived from
-    images and report    complete
+    images, no report    no report anywhere for this patient
+    report, no images    reported, but no DICOM file is attributed to them
+    partly covered       has both, but some study has no report, or some
+                         report has no images - the counts say which
+    fully covered        every study has a report and every report has images
     neither              a code folder holding neither - only Word/Excel
                          files, stray litter, or nothing at all
 
-Shared by report.py and match_report_from_db.py so the two always agree; the
-counts come from the database, which means they cover every file crawled, not
-only the studies probe.py could parse a header from.
+The per-study verdicts come from the caller, not from this module: report.py
+and match_report_from_db.py match reports slightly differently, and each must
+describe the workbook it is actually writing. File counts come from the
+database, so they cover every file crawled rather than only the studies
+probe.py could parse a header from.
 
 "Has images" means at least one file identified as DICOM, not at least one
 study. A folder whose headers could not be read still holds images, and
@@ -22,20 +29,33 @@ from collections import Counter, defaultdict
 
 IMAGES_ONLY = "images, no report"
 REPORTS_ONLY = "report, no images"
-BOTH = "images and report"
+PARTIAL = "partly covered"
+COMPLETE = "fully covered"
 NEITHER = "neither"
 
-# The order the buckets are reported in - worst news first, since the first
-# two are the ones that need chasing.
-BUCKETS = [IMAGES_ONLY, REPORTS_ONLY, BOTH, NEITHER]
+# Worst news first - the top of the list is the work queue.
+BUCKETS = [IMAGES_ONLY, REPORTS_ONLY, PARTIAL, COMPLETE, NEITHER]
 
-HEADER = ["Patient Code", "DICOM Files", "Studies", "Report Files", "Category"]
-WIDTHS = (14, 13, 9, 13, 20)
+# What the caller counts per patient.
+MATCHED = "studies with a report"
+UNMATCHED = "studies with no report"
+ORPHAN = "reports with no images"
+DETAIL = [MATCHED, UNMATCHED, ORPHAN]
+
+HEADER = ["Patient Code", "DICOM Files", "Report Files", "Studies",
+          "Studies w/ Report", "Studies w/o Report", "Reports w/o Images",
+          "Category"]
+WIDTHS = (14, 12, 12, 9, 17, 18, 18, 18)
 
 
-def bucket_of(n_dicom, n_pdf):
+def new_detail():
+    """code -> Counter of the three per-study verdicts."""
+    return defaultdict(Counter)
+
+
+def bucket_of(n_dicom, n_pdf, unmatched, orphans):
     if n_dicom and n_pdf:
-        return BOTH
+        return PARTIAL if (unmatched or orphans) else COMPLETE
     if n_dicom:
         return IMAGES_ONLY
     if n_pdf:
@@ -43,12 +63,14 @@ def bucket_of(n_dicom, n_pdf):
     return NEITHER
 
 
-def classify(conn):
-    """(rows, summary) - one row per patient, and the counts per bucket.
+def classify(conn, detail=None):
+    """(rows, summary, totals) for every attributed patient.
 
-    rows are [code, dicom files, studies, pdf files, bucket], ordered by
-    bucket then code so the work queue reads top-down.
+    detail is code -> Counter keyed by MATCHED / UNMATCHED / ORPHAN. Without
+    it a patient holding both can only be called "partly covered", since
+    nothing says whether the two sides line up.
     """
+    detail = detail if detail is not None else {}
     counts = defaultdict(Counter)
     for code, kind, n in conn.execute(
             "SELECT code, kind, COUNT(*) FROM files"
@@ -60,37 +82,50 @@ def classify(conn):
         " WHERE d.code IS NOT NULL GROUP BY d.code"))
 
     order = {name: i for i, name in enumerate(BUCKETS)}
-    rows = []
-    summary = Counter()
-    for code, kinds in counts.items():
+    rows, summary, totals = [], Counter(), Counter()
+    for code in set(counts) | set(detail):
+        kinds = counts.get(code, Counter())
         n_dicom, n_pdf = kinds.get("dicom", 0), kinds.get("pdf", 0)
-        bucket = bucket_of(n_dicom, n_pdf)
+        d = detail.get(code, Counter())
+        matched, unmatched = d.get(MATCHED, 0), d.get(UNMATCHED, 0)
+        orphans = d.get(ORPHAN, 0)
+        bucket = bucket_of(n_dicom, n_pdf, unmatched, orphans)
         summary[bucket] += 1
-        rows.append([code, n_dicom, studies.get(code, 0), n_pdf, bucket])
-    rows.sort(key=lambda r: (order[r[4]], r[0]))
-    return rows, summary
+        totals[MATCHED] += matched
+        totals[UNMATCHED] += unmatched
+        totals[ORPHAN] += orphans
+        rows.append([code, n_dicom, n_pdf, studies.get(code, 0),
+                     matched, unmatched, orphans, bucket])
+    rows.sort(key=lambda r: (order[r[7]], r[0]))
+    return rows, summary, totals
 
 
-def summary_lines(summary):
-    """The four counts plus a total, as (label, value) pairs."""
-    total = sum(summary.values())
-    lines = [(f"Patients with {name}", summary.get(name, 0)) for name in BUCKETS]
-    lines.append(("Patients total", total))
+def summary_lines(summary, totals=None):
+    """The buckets, then the study-level totals, as (label, value) pairs."""
+    lines = [(f"Patients {name}", summary.get(name, 0)) for name in BUCKETS]
+    lines.append(("Patients total", sum(summary.values())))
+    if totals:
+        lines.append(("", ""))
+        lines += [(f"Total {name}", totals.get(name, 0)) for name in DETAIL]
     return lines
 
 
-def print_summary(summary, indent="  "):
+def print_summary(summary, totals=None, indent="  "):
     total = sum(summary.values())
-    width = max(len(n) for n in BUCKETS) + 14
+    width = max(len(n) for n in BUCKETS + DETAIL) + 14
     for name in BUCKETS:
         n = summary.get(name, 0)
         pct = f"{100.0 * n / total:.1f}%" if total else "-"
-        print(f"{indent}{'patients with ' + name:<{width}} {n:>8,}  {pct:>6}")
+        print(f"{indent}{'patients ' + name:<{width}} {n:>8,}  {pct:>6}")
     print(f"{indent}{'patients total':<{width}} {total:>8,}")
+    if totals:
+        print()
+        for name in DETAIL:
+            print(f"{indent}{name:<{width}} {totals.get(name, 0):>8,}")
 
 
-def write_workbook(rows, summary, path):
-    """The four buckets and the patients behind them, as its own workbook.
+def write_workbook(rows, summary, totals, path):
+    """The buckets and the patients behind them, as its own workbook.
 
     Kept separate from match_report.xlsx on purpose: that file reproduces
     match_reports.py exactly, and anything reading it expects one sheet with
@@ -102,9 +137,9 @@ def write_workbook(rows, summary, path):
     wb = Workbook()
     ws = wb.active
     ws.title = "Summary"
-    ws.append(["Measure", "Patients"])
+    ws.append(["Measure", "Count"])
     ws["A1"].font = ws["B1"].font = Font(bold=True)
-    for label, value in summary_lines(summary):
+    for label, value in summary_lines(summary, totals):
         ws.append([label, value])
     ws.column_dimensions["A"].width = 34
     ws.column_dimensions["B"].width = 12
@@ -115,8 +150,8 @@ def write_workbook(rows, summary, path):
         cell.font = Font(bold=True)
     for row in rows:
         ws.append(row)
-    for letter, width in zip("ABCDE", WIDTHS):
+    for letter, width in zip("ABCDEFGH", WIDTHS):
         ws.column_dimensions[letter].width = width
     ws.freeze_panes = "A2"
-    ws.auto_filter.ref = f"A1:E{ws.max_row}"
+    ws.auto_filter.ref = f"A1:H{ws.max_row}"
     wb.save(path)
