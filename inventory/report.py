@@ -80,6 +80,21 @@ else:
 import coverage  # noqa: E402
 from probe import KNOWN_EXTS  # noqa: E402
 
+# What a row is, and why - the verdict is the Status column, the reasoning
+# behind it is the Note column. Keeping them apart means Status can be
+# filtered on without having to know every phrasing of the reason.
+STATUS_BOTH = "report and image"
+STATUS_IMAGE_ONLY = "only image"
+STATUS_REPORT_ONLY = "only report"
+STATUS_NEITHER = "no report or image"   # patient-level only; no study can be it
+
+NOTE_DATE_MODALITY = "matched on date + modality"
+NOTE_DATE_ONLY = "matched on date only - modality not confirmed"
+NOTE_NO_DATE_MATCH = "patient has other reports, none for this date"
+NOTE_NO_REPORT = "no report anywhere for this patient"
+NOTE_UNASSIGNED = "folder carries no code - see Suggestions"
+NOTE_NO_IMAGES = "no images found for this report"
+
 KIND_COLUMNS = ["dicom", "dicomdir", "pdf", "word", "excel", "slides", "image",
                 "video", "archive", "program", "text", "office", "unknown",
                 "other"]
@@ -398,20 +413,20 @@ def match_studies(conn, dir_code, dir_paths, reports, args):
     for sid, did, uid, date, modality, slices, confidence in rows:
         code = dir_code.get(did)
         cands = reports.get(code, []) if code else []
-        matched, status = None, "no report found"
+        matched = None
+        status, note = STATUS_IMAGE_ONLY, NOTE_NO_REPORT
         if not code:
-            status = "unassigned - no code in path"
+            note = NOTE_UNASSIGNED
         else:
             exact = [r for r in cands if r[1] and r[1] == date
                      and r[2] and modality and r[2] == modality]
             same_day = [r for r in cands if r[1] and r[1] == date]
             if exact:
-                matched, status = exact[0], "matched (date + modality)"
+                matched, status, note = exact[0], STATUS_BOTH, NOTE_DATE_MODALITY
             elif same_day:
-                matched = same_day[0]
-                status = "matched (date only - modality unconfirmed)"
+                matched, status, note = same_day[0], STATUS_BOTH, NOTE_DATE_ONLY
             elif cands:
-                status = "report exists for patient but no date match"
+                note = NOTE_NO_DATE_MATCH
         if matched:
             used[code].add(matched[0])
         out.append(dict(
@@ -419,7 +434,7 @@ def match_studies(conn, dir_code, dir_paths, reports, args):
             modality=display_modality(modality) if modality else "",
             raw_modality=modality or "", slices=slices, confidence=confidence,
             report=os.path.basename(matched[0]) if matched else "",
-            status=status))
+            status=status, note=note))
 
     for code, items in reports.items():
         for path, date, modality, name in items:
@@ -429,7 +444,8 @@ def match_studies(conn, dir_code, dir_paths, reports, args):
                     date=date or "",
                     modality=display_modality(modality) if modality else "",
                     raw_modality=modality or "", slices=0, confidence="",
-                    report=name, status="report with no matching images"))
+                    report=name, status=STATUS_REPORT_ONLY,
+                    note=NOTE_NO_IMAGES))
 
     return out
 
@@ -443,7 +459,8 @@ CREATE TABLE study_report (
     modality    TEXT,           -- raw DICOM code: MR, US, CR
     slices      INTEGER,        -- DICOM files in the study
     report      TEXT,           -- report file name, '' if none
-    status      TEXT NOT NULL,
+    status      TEXT NOT NULL,  -- report and image | only image | only report
+    note        TEXT,           -- why: which evidence matched, or what is absent
     folder      TEXT
 );
 CREATE INDEX study_report_code   ON study_report(code);
@@ -460,10 +477,10 @@ def write_matches(conn, out, widths):
     conn.executescript(MATCH_SCHEMA)
     conn.executemany(
         "INSERT INTO study_report(study_id, code, study_date, modality,"
-        " slices, report, status, folder) VALUES (?,?,?,?,?,?,?,?)",
+        " slices, report, status, note, folder) VALUES (?,?,?,?,?,?,?,?,?)",
         [(r["study_id"], fmt(r["code"], widths) or None, r["date"],
-          r["raw_modality"], r["slices"], r["report"], r["status"], r["dir"])
-         for r in out])
+          r["raw_modality"], r["slices"], r["report"], r["status"], r["note"],
+          r["dir"]) for r in out])
     conn.commit()
 
 
@@ -483,7 +500,7 @@ def suggest(studies, reports):
 
     out = []
     for s in studies:
-        if s["status"] != "unassigned - no code in path":
+        if s["code"] or s["study_id"] is None:
             continue
         cands = sorted(index.get((s["date"], s["raw_modality"] or None))
                        or index.get((s["date"], None)) or set())
@@ -549,9 +566,9 @@ def write_workbook(data, out_path):
         if not s_["code"]:
             continue
         code = fmt(s_["code"], W)
-        if s_["status"] == "report with no matching images":
+        if s_["status"] == STATUS_REPORT_ONLY:
             cov_detail[code][coverage.ORPHAN] += 1
-        elif s_["status"].startswith("matched"):
+        elif s_["status"] == STATUS_BOTH:
             cov_detail[code][coverage.MATCHED] += 1
         else:
             cov_detail[code][coverage.UNMATCHED] += 1
@@ -560,7 +577,7 @@ def write_workbook(data, out_path):
     studies = data["studies"]
     real = [s for s in studies if s["study_id"] is not None]
     assigned = [s for s in real if s["code"]]
-    with_report = [s for s in assigned if s["status"].startswith("matched")]
+    with_report = [s for s in assigned if s["status"] == STATUS_BOTH]
     patients = sorted((c for c in data["per_patient"] if c != "UNASSIGNED"),
                       key=lambda c: (c[0], c[1]))
     studies_by_code = Counter(s["code"] for s in assigned)
@@ -575,13 +592,17 @@ def write_workbook(data, out_path):
         ("Total size", human_bytes(sum(data["per_patient_bytes"].values()))),
         ("", ""),
         ("DICOM studies", len(real)),
+        ("  counts exact (every DICOM read)",
+         sum(1 for s in real if s["confidence"] == "counted")),
+        ("  counts INFERRED from a sample",
+         sum(1 for s in real if s["confidence"] != "counted")),
         ("  attributed to a patient", len(assigned)),
         ("  NOT attributed (see Unassigned)", len(real) - len(assigned)),
         ("", ""),
         ("Studies with a matching report", len(with_report)),
         ("Studies without a report", len(assigned) - len(with_report)),
         ("Reports with no matching images",
-         sum(1 for s in studies if s["status"] == "report with no matching images")),
+         sum(1 for s in studies if s["status"] == STATUS_REPORT_ONLY)),
         ("", ""),
         ("Patients with at least one study", len(studies_by_code)),
         ("Patients where every study has a report",
@@ -618,10 +639,10 @@ def write_workbook(data, out_path):
 
     sheet(wb, "Studies",
           ["Patient Code", "Study Date", "Modality", "DICOM Files",
-           "Count Confidence", "Matched Report", "Status", "Folder"],
-          (14, 12, 12, 12, 16, 42, 38, 70),
+           "Count Confidence", "Matched Report", "Status", "Note", "Folder"],
+          (14, 12, 12, 12, 16, 42, 18, 46, 70),
           [[fmt(s["code"], W), s["date"] or "", s["modality"], s["slices"],
-            s["confidence"], s["report"], s["status"], s["dir"]]
+            s["confidence"], s["report"], s["status"], s["note"], s["dir"]]
            for s in sorted(studies, key=lambda s: (fmt(s["code"], W), s["date"] or ""))])
 
     sheet(wb, "Unassigned",
@@ -678,7 +699,7 @@ def main():
     write_workbook(data, args.out)
 
     real = [s for s in data["studies"] if s["study_id"] is not None]
-    matched = sum(1 for s in real if s["status"].startswith("matched"))
+    matched = sum(1 for s in real if s["status"] == STATUS_BOTH)
     unassigned = sum(1 for s in real if not s["code"])
     strong = sum(1 for s in data["suggestions"] if s["confidence"] == "strong")
     print(f"wrote {args.out}")
@@ -686,6 +707,12 @@ def main():
     print(f"  patients: {len([c for c in data['per_patient'] if c != 'UNASSIGNED']):,}")
     print(f"  studies:  {len(real):,}  ({matched:,} with a report, "
           f"{unassigned:,} unattributed)")
+    inferred = sum(1 for s in real if s["confidence"] != "counted")
+    if inferred:
+        print(f"  WARNING: {inferred:,} studies have a DICOM count inferred from"
+              " a sample, not counted.\n"
+              "           Re-run: python probe.py --db <db> --metadata all"
+              " --force", file=sys.stderr)
     print(f"  conflicts: {len(data['conflicts']):,}   "
           f"strong suggestions: {strong:,}")
     print(f"  codes written to the database - query the v_files view")

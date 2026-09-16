@@ -91,20 +91,36 @@ and DICOM headers carry date and modality, so that overlap can point back to a
 code. If exactly one patient has a report on that date and modality, that is a
 strong lead. It is a lead, not a match, which is why it sits on its own sheet.
 
-### Match tiers
+### Status and Note
 
-Reported separately on purpose, so a weak match never looks like a strong one:
+`Status` on the `Studies` sheet is one of three plain verdicts, so it can be
+filtered on without knowing every phrasing of the reason:
 
-1. `matched (date + modality)` - strongest
-2. `matched (date only - modality unconfirmed)` - the modality word in the
-   report filename could not be mapped
-3. `report exists for patient but no date match`
-4. `no report found`
+| Status | |
+|---|---|
+| `report and image` | both present |
+| `only image` | images, no report paired with them |
+| `only report` | a report whose images are missing |
 
-If tier 2 is large, check `MODALITY_ALIASES` in `../match_reports.py` for a
-missing word. Testing surfaced exactly this: `XR` is absent, so every X-ray
-silently drops a tier. `report.py` imports that table rather than duplicating
-it, so a fix there applies to both tools.
+(`no report or image` completes the set, but no *study* row can be it - a
+patient with neither appears on `Coverage`.)
+
+**Why** sits in `Note`, next to it:
+
+```
+ 13  report and image   | matched on date + modality
+  1  report and image   | matched on date only - modality not confirmed
+  5  only report        | no images found for this report
+  4  only image         | folder carries no code - see Suggestions
+  3  only image         | patient has other reports, none for this date
+  1  only image         | no report anywhere for this patient
+```
+
+A large `matched on date only` count means the modality word in those report
+filenames could not be mapped - check `MODALITY_ALIASES` in
+`../match_reports.py`. Testing surfaced exactly this: `XR` is absent, so every
+X-ray silently drops to a date-only match. `report.py` imports that table
+rather than duplicating it, so a fix there applies to both tools.
 
 ## Who has what: the `Coverage` sheet
 
@@ -124,11 +140,11 @@ AA0052            0        0        0          0           0                   0
 
 | label | means |
 |---|---|
-| `images, no report` | no report anywhere for this patient |
-| `report, no images` | reported, but no DICOM file is attributed to them |
-| `partly covered` | has both, but some study has no report or some report has no images - **the three columns say which** |
-| `fully covered` | every study has a report and every report has images |
-| `neither` | a code folder holding neither - only Word/Excel files, stray litter, or nothing at all |
+| `only image` | no report anywhere for this patient |
+| `only report` | reported, but no DICOM file is attributed to them |
+| `report and image (partial)` | has both, but some study has no report or some report has no images - **the three columns say which** |
+| `report and image (complete)` | every study has a report and every report has images |
+| `no report or image` | a code folder holding neither - only Word/Excel files, stray litter, or nothing at all |
 
 Sort or filter on `Category` for the roll-up; read the columns for the detail.
 The counts also appear on `Overview`, and `match_report_from_db.py` prints them
@@ -285,6 +301,28 @@ than another crawl of the share.
 | `all` (default) | every DICOM | ~20 GB | exact |
 | `sample` | a few per directory | ~300 MB | inferred |
 | `none` | a few per directory | tiny | inferred |
+
+`all` is the default, and the only mode that gives exact study counts - the
+other two infer most of them from a sample. Every study row is marked
+`counted` or `inferred`, `Overview` totals both, and `report.py` prints a
+warning if any study count is inferred, so an estimate can never be mistaken
+for a real number.
+
+**A resumed probe skips directories already done, whatever `--metadata` now
+says.** Switching from `sample` to `all` on a probed database therefore
+changes nothing on its own - it reports `0 directories to probe` and keeps
+every inferred count. `probe.py` warns when the mode differs from the one the
+database was built with; to actually re-read, add `--force`:
+
+```bash
+python probe.py --db inventory.db --metadata all --force
+```
+
+Check what you have at any time:
+
+```sql
+SELECT confidence, COUNT(*) FROM studies GROUP BY confidence;
+```
 
 `all` is slower and much bigger, and worth it if the archive gets asked
 questions more than once. Time the share first:

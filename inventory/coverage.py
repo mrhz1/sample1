@@ -6,13 +6,15 @@ a second study with none, and a third report whose images never arrived. A
 single label per patient hides that, so every row carries the three counts
 behind it and the label only says whether they are all accounted for:
 
-    images, no report    no report anywhere for this patient
-    report, no images    reported, but no DICOM file is attributed to them
-    partly covered       has both, but some study has no report, or some
-                         report has no images - the counts say which
-    fully covered        every study has a report and every report has images
-    neither              a code folder holding neither - only Word/Excel
-                         files, stray litter, or nothing at all
+    only image                   no report anywhere for this patient
+    only report                  reported, but no DICOM file is attributed
+    report and image (partial)   has both, but some study has no report, or
+                                 some report has no images - the counts
+                                 say which
+    report and image (complete)  every study has a report and every report
+                                 has images
+    no report or image           a code folder holding neither - only
+                                 Word/Excel files, stray litter, or nothing
 
 The per-study verdicts come from the caller, not from this module: report.py
 and match_report_from_db.py match reports slightly differently, and each must
@@ -27,11 +29,11 @@ counting studies instead would quietly file it under "no images".
 
 from collections import Counter, defaultdict
 
-IMAGES_ONLY = "images, no report"
-REPORTS_ONLY = "report, no images"
-PARTIAL = "partly covered"
-COMPLETE = "fully covered"
-NEITHER = "neither"
+IMAGES_ONLY = "only image"
+REPORTS_ONLY = "only report"
+PARTIAL = "report and image (partial)"
+COMPLETE = "report and image (complete)"
+NEITHER = "no report or image"
 
 # Worst news first - the top of the list is the work queue.
 BUCKETS = [IMAGES_ONLY, REPORTS_ONLY, PARTIAL, COMPLETE, NEITHER]

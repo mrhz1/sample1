@@ -338,6 +338,25 @@ def main():
             "UPDATE files SET kind = NULL, kind_source = NULL;")
         conn.commit()
 
+    # A resumed run skips directories already in dir_probe, whatever --metadata
+    # now says - so switching 'sample' to 'all' on a probed database would
+    # silently leave every inferred count in place. Say so rather than let a
+    # report claim exact numbers it does not have.
+    previous = conn.execute(
+        "SELECT value FROM meta WHERE key = 'probe_metadata'").fetchone()
+    previous = previous[0] if previous else None
+    if previous and previous != args.metadata and not args.force:
+        print(f"\nWARNING: this database was probed with --metadata {previous},"
+              f" and you asked for {args.metadata}.\n"
+              "  Directories already probed are SKIPPED on a resume, so they keep"
+              f" their {previous} results.\n"
+              "  To re-read everything at the new setting:\n"
+              f"      python probe.py --db {args.db} --metadata {args.metadata}"
+              " --force\n", file=sys.stderr)
+    conn.execute("INSERT OR REPLACE INTO meta(key, value) VALUES"
+                 " ('probe_metadata', ?)", (args.metadata,))
+    conn.commit()
+
     # Directories holding at least one file we can't identify by extension.
     unknown_exts = ",".join("?" * len(SKIP_EXTS))
     todo = conn.execute(
