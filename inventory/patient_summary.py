@@ -50,6 +50,7 @@ S_OTHER = "other pdf"
 HEADER = [
     ("Patient Code", 14),
     ("Total DICOM Images", 17),
+    ("Duplicate DICOM Images", 18),
     ("Total PDFs", 12),
     ("DICOMs With a Report", 18),
     ("DICOMs With No Report", 18),
@@ -82,7 +83,7 @@ def collect(conn):
             "dicom_reported": 0, "reports_covering": set(),
             "dicom_unreported": 0, "reports_orphan": 0, "other_pdf": 0,
             "other_files": 0, "dicom_files": 0, "pdf_files": 0,
-            "total_files": 0, "size": 0})
+            "duplicates": 0, "total_files": 0, "size": 0})
 
     for code, status, slices, report in conn.execute(
             "SELECT code, status, slices, report FROM study_report"
@@ -98,6 +99,21 @@ def collect(conn):
             r["reports_orphan"] += 1
         elif status == S_OTHER:
             r["other_pdf"] += 1
+
+    # Redundant copies, if find_duplicates.py has been run. Absent rather than
+    # zero when it has not - a blank column invites the question, a zero
+    # answers it wrongly.
+    have = {r[0] for r in conn.execute(
+        "SELECT name FROM sqlite_master WHERE type = 'table'")}
+    if "dicom_uid" in have:
+        for code, n in conn.execute("""
+                SELECT code, SUM(n - 1) FROM (
+                    SELECT f.code AS code, u.uid AS uid, COUNT(*) AS n
+                      FROM dicom_uid u JOIN files f ON f.id = u.file_id
+                     WHERE f.code IS NOT NULL
+                     GROUP BY f.code, u.uid HAVING COUNT(*) > 1)
+                 GROUP BY code"""):
+            row(code)["duplicates"] = n or 0
 
     for code, kind, n, size in conn.execute(
             "SELECT code, kind, COUNT(*), COALESCE(SUM(size), 0) FROM files"
@@ -120,7 +136,7 @@ def build_rows(rows):
     out = []
     for code in sorted(rows):
         r = rows[code]
-        out.append([code, r["dicom_files"], r["pdf_files"],
+        out.append([code, r["dicom_files"], r["duplicates"], r["pdf_files"],
                     r["dicom_reported"], r["dicom_unreported"],
                     r["reports_orphan"], r["other_pdf"],
                     r["total_files"], human_bytes(r["size"])])
@@ -150,6 +166,8 @@ def overview(conn, rows, root):
         ("Image files (DICOM) that have a report", reported),
         ("Image files with no report", unreported),
         ("Share of image files reported", pct),
+        ("Duplicate image files (redundant copies)",
+         sum(r["duplicates"] for r in rows.values())),
         ("Image files not in any study", sum(
             max(r["dicom_files"] - r["dicom_reported"] - r["dicom_unreported"], 0)
             for r in rows.values())),
@@ -240,7 +258,7 @@ def main():
                data)
     # Anything outstanding on a row is worth the eye landing on it.
     for row in ws.iter_rows(min_row=2):
-        if (row[4].value or 0) or (row[5].value or 0):
+        if (row[5].value or 0) or (row[6].value or 0):
             for cell in row:
                 cell.fill = WARN_FILL
     wb.save(args.out)
@@ -248,10 +266,13 @@ def main():
     print(f"wrote {args.out}")
     print(f"  {banner}")
     print(f"  {len(data):,} patients")
-    print(f"  {sum(r[3] for r in data):,} DICOMs have a report, "
-          f"{sum(r[4] for r in data):,} do not")
-    print(f"  {sum(r[5] for r in data):,} reports with no DICOM, "
-          f"{sum(r[6] for r in data):,} other PDFs")
+    print(f"  {sum(r[4] for r in data):,} DICOMs have a report, "
+          f"{sum(r[5] for r in data):,} do not")
+    print(f"  {sum(r[6] for r in data):,} reports with no DICOM, "
+          f"{sum(r[7] for r in data):,} other PDFs")
+    dupes = sum(r[2] for r in data if isinstance(r[2], int))
+    if dupes:
+        print(f"  {dupes:,} redundant DICOM copies (see find_duplicates.py)")
 
 
 if __name__ == "__main__":

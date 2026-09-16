@@ -220,6 +220,46 @@ Patients with a long history get their dates capped at 12 followed by
 the same sheet into its coverage workbook. Both are built by `coverage.py` from
 each tool's own matching, and the two come out identical.
 
+## `find_duplicates.py`: the same image, filed twice
+
+The same study often reaches an archive more than once - a working copy, a
+re-export, a folder duplicated during a migration. Counting files then says
+30,000 images where a person would say 14,000.
+
+```bash
+python find_duplicates.py --db inventory.db --out duplicates.xlsx
+```
+
+```
+  30,144 DICOM files
+  14,072 distinct images
+  16,072 redundant copies (53.3% of the files)
+
+  identified by SOPInstanceUID: 30,144
+
+  most affected patients:
+    AA0976       16,072 redundant copies
+```
+
+**No access to the share.** `probe.py --metadata all` already stored every
+header, and two files with the same `SOPInstanceUID` are the same image - it is
+generated once by the scanner, mandatory in a conformant file, and preserved by
+a copy. Comparing bytes would be equally certain and would mean re-reading a
+terabyte.
+
+Where a header carries no `SOPInstanceUID`, it falls back to file name plus
+exact byte size. That is good evidence, not proof, so the output always says
+which method produced which count and never blends them.
+
+An image filed under **two different patient codes** is reported separately. It
+is not wasted space, it is a filing error, and only a person can say which side
+is wrong.
+
+Identities are cached in a `dicom_uid` table, so the expensive part runs once.
+`patient_summary.py` then shows a `Duplicate DICOM Images` column beside the
+total - blank until this has been run, rather than zero, since a zero would
+answer the question wrongly.
+
 ## `patient_summary.py`: one line per patient
 
 A second, smaller workbook for the question "what exactly does AA0001 have?" -
