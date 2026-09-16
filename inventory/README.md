@@ -76,6 +76,7 @@ to have in an inventory.
 | `Patients` | patient code | file counts by type, size, studies with/without a report |
 | `Studies` | study | date, modality, slice count, matched report, match tier |
 | `Unassigned` | folder | files with no derivable code - **the work queue** |
+| `Coverage` | patient code | images only / report only / both / neither |
 | `Suggestions` | orphan study | candidate codes recovered by cross-referencing reports |
 | `Conflicts` | file | filename and folder disagree about the code |
 
@@ -104,6 +105,40 @@ If tier 2 is large, check `MODALITY_ALIASES` in `../match_reports.py` for a
 missing word. Testing surfaced exactly this: `XR` is absent, so every X-ray
 silently drops a tier. `report.py` imports that table rather than duplicating
 it, so a fix there applies to both tools.
+
+## Who has what: the `Coverage` sheet
+
+Four buckets, mutually exclusive, every attributed patient in exactly one:
+
+| bucket | means |
+|---|---|
+| `images, no report` | scanned, nothing reported yet |
+| `report, no images` | reported, but the images are missing or filed somewhere no code could be derived from |
+| `images and report` | complete |
+| `neither` | a code folder holding neither - only Word/Excel files, stray litter, or nothing at all |
+
+The counts also appear on `Overview`, and `match_report_from_db.py` prints them
+at the end of every run:
+
+```
+  patients with images, no report        1    7.1%
+  patients with report, no images        1    7.1%
+  patients with images and report       11   78.6%
+  patients with neither                  1    7.1%
+  patients total                        14
+```
+
+Add `--coverage patients.xlsx` there to get the per-patient detail behind those
+numbers as its own workbook - a `Summary` sheet and a `Patients` sheet. It is a
+separate file on purpose: `match_report.xlsx` reproduces `match_reports.py`
+exactly, and anything reading it expects one sheet with six known columns.
+
+Both tools import `coverage.py`, so the two can't drift apart, and `--prefix`
+narrows the coverage numbers the same way it narrows the workbook.
+
+**"Has images" means at least one file identified as DICOM, not at least one
+study.** A folder whose headers could not be parsed still holds images;
+counting studies would quietly file it under "no images".
 
 ## The old `match_reports.py` format
 

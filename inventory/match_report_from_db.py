@@ -42,6 +42,10 @@ Usage:
     --include-unassigned
                      Also emit studies whose folder carries no code, with an
                      empty Code column and the folder in place of the report.
+    --coverage PATH  Also write a second workbook splitting patients into
+                     images-only / report-only / both / neither. Separate file
+                     because match_report.xlsx has to stay exactly the shape
+                     match_reports.py made it.
 """
 
 import argparse
@@ -49,8 +53,10 @@ import os
 import re
 import sqlite3
 import sys
-from collections import defaultdict
+from collections import Counter, defaultdict
 from pathlib import Path
+
+import coverage
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from match_reports import (  # noqa: E402  - reuse, don't reimplement
@@ -249,6 +255,7 @@ def main():
     ap.add_argument("--date-order", default="dmy", choices=["dmy", "mdy"])
     ap.add_argument("--no-per-code", action="store_true")
     ap.add_argument("--include-unassigned", action="store_true")
+    ap.add_argument("--coverage", default=None)
     args = ap.parse_args()
 
     if not os.path.exists(args.db):
@@ -266,23 +273,30 @@ def main():
     dirs = load_dirs(conn)
     reports, orphan_reports = collect_reports(conn, dirs, args.date_order)
     studies, unassigned = collect_studies(conn, dirs)
+    cov_rows, _ = coverage.classify(conn)
     conn.close()
 
-    codes = set(studies) | set(reports)
-    filtered = False
+    all_codes = set(studies) | set(reports) | {r[0] for r in cov_rows}
+    prefix_set = code_set = None
     if args.prefix:
-        wanted = {p.strip().upper() for p in args.prefix.split(",") if p.strip()}
-        codes = {c for c in codes if code_prefix(c) in wanted}
-        filtered = True
-        unknown = wanted - {code_prefix(c) for c in set(studies) | set(reports)}
+        prefix_set = {p.strip().upper() for p in args.prefix.split(",") if p.strip()}
+        unknown = prefix_set - {code_prefix(c) for c in all_codes}
         if unknown:
             print(f"warning: no codes with prefix {', '.join(sorted(unknown))} "
                   "- run report.py --discover to see what is there",
                   file=sys.stderr)
     if args.code:
-        wanted = {c.strip().upper() for c in args.code.split(",") if c.strip()}
-        codes = {c for c in codes if c.upper() in wanted}
-        filtered = True
+        code_set = {c.strip().upper() for c in args.code.split(",") if c.strip()}
+
+    def keep(code):
+        if prefix_set is not None and code_prefix(code) not in prefix_set:
+            return False
+        if code_set is not None and code.upper() not in code_set:
+            return False
+        return True
+
+    filtered = prefix_set is not None or code_set is not None
+    codes = {c for c in set(studies) | set(reports) if keep(c)}
 
     out_path = Path(args.out).resolve()
     results_dir = Path(args.results_dir) if args.results_dir \
@@ -312,6 +326,11 @@ def main():
 
     write_summary_sheet(out_path, combined)
 
+    # Same filter as the workbook, so the two files always describe the same
+    # set of patients.
+    cov_rows = [r for r in cov_rows if keep(r[0])]
+    cov_summary = Counter(r[4] for r in cov_rows)
+
     print(f"wrote {out_path}  ({len(combined):,} rows)")
     if not args.no_per_code:
         print(f"  per-code workbooks: {n_files:,} in {results_dir}")
@@ -329,6 +348,12 @@ def main():
               "code (--include-unassigned)")
     if orphan_reports:
         print(f"  skipped {orphan_reports:,} PDFs with no derivable code")
+
+    print()
+    coverage.print_summary(cov_summary)
+    if args.coverage:
+        coverage.write_workbook(cov_rows, cov_summary, args.coverage)
+        print(f"\n  patient coverage detail: {args.coverage}")
 
 
 if __name__ == "__main__":

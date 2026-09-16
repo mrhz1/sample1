@@ -77,6 +77,7 @@ else:
 
     def parse_pdf_date(name, date_order="dmy"):
         return _parse_pdf_date(name)
+import coverage  # noqa: E402
 from probe import KNOWN_EXTS  # noqa: E402
 
 KIND_COLUMNS = ["dicom", "dicomdir", "pdf", "word", "excel", "slides", "image",
@@ -541,6 +542,8 @@ def write_workbook(data, out_path):
     wb.remove(wb.active)
     W = data["widths"]
 
+    cov_rows, cov_summary = coverage.classify(data["conn"])
+
     studies = data["studies"]
     real = [s for s in studies if s["study_id"] is not None]
     assigned = [s for s in real if s["code"]]
@@ -570,6 +573,9 @@ def write_workbook(data, out_path):
         ("Patients with at least one study", len(studies_by_code)),
         ("Patients where every study has a report",
          sum(1 for c in studies_by_code if reported_by_code[c] == studies_by_code[c])),
+        ("", ""),
+    ] + coverage.summary_lines(cov_summary) + [
+        ("", ""),
         ("Filename/folder code conflicts", len(data["conflicts"])),
         ("PDFs with no patient code at all", len(data["orphan_reports"])),
         ("", ""),
@@ -609,6 +615,8 @@ def write_workbook(data, out_path):
           ["Folder", "Files With No Code", "Note"], (95, 18, 40),
           [[data["dir_paths"][did], n, "no patient code anywhere in this path"]
            for did, n in sorted(data["unassigned_dirs"].items(), key=lambda kv: -kv[1])])
+
+    sheet(wb, "Coverage", coverage.HEADER, coverage.WIDTHS, cov_rows)
 
     sheet(wb, "Suggestions",
           ["Folder", "Study Date", "Modality", "DICOM Files",
