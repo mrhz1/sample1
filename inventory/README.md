@@ -230,11 +230,15 @@ python patient_summary.py --db inventory.db --out patient_summary.xlsx
 ```
 
 ```
-Patient  DICOMs w/ Report  Reports Covering Them  DICOMs w/o Report  Reports w/o Images  Other PDFs  Other Files
-AA0003                 90                      1                 40                   0           0            0
-AA0006                 12                      1                 40                   1           1            3
-AVDD004                52                      2                 40                   0           0            2
+Patient  Image Files That  Reports Covering  Image Files With  Reports With  Other PDFs     Other
+         Have a Report     Those Images      No Report         No Images     (Not Reports)  Files
+AA0003                 90                 1                40             0              0      0
+AA0006                 12                 1                40             1              1      3
+AVDD004                52                 2                40             0              0      2
 ```
+
+Headings are spelled out rather than abbreviated, because this is the file that
+gets forwarded to someone who does not work with the archive daily.
 
 **These are DICOM *files*, not studies.** `master_report.xlsx` counts studies,
 because that is the unit a report is written about; this counts the files
@@ -246,12 +250,12 @@ people mean when they ask how much is outstanding.
 `Reports Covering Them` is how many distinct PDFs account for the reported
 side: one report can cover 400 slices, or several can.
 
-`DICOMs Not In A Study` catches any DICOM attributed to the patient that no
-study accounts for - a header `probe.py` could not read. It is normally 0, and
-it is shown rather than absorbed so the columns add up: `DICOMs w/ Report` +
-`w/o Report` + `Not In A Study` is exactly the patient's DICOM file count, and
-that plus the PDFs plus `Other Files` is `Total Files`. Rows with anything
-outstanding are shaded.
+`Image Files Not In Any Study` catches any DICOM attributed to the patient that
+no study accounts for - a header `probe.py` could not read. It is normally 0,
+and it is shown rather than absorbed so the columns add up: the three image
+columns total exactly the patient's DICOM file count, and that plus the PDFs
+plus `Other Files` is `Total Files`. Rows with anything outstanding are
+shaded.
 
 It reads the matching `report.py` already wrote to `study_report`, so nothing
 is re-matched and the two files cannot disagree - which does mean `report.py`

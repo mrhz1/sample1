@@ -3,8 +3,9 @@
 Answers "what exactly does AA0001 have?" in a single row rather than across
 several sheets:
 
-    AA0001   400 DICOMs reported by 3 PDFs | 200 DICOMs not reported
-             4 reports with no images | 10 other files
+    AA0001   400 image files have a report, covered by 3 PDFs
+             200 image files have no report
+             4 reports have no images | 10 other files
 
 The counts here are **DICOM files**, not studies. master_report.xlsx counts
 studies, because that is the unit a report is written about; this counts the
@@ -44,15 +45,17 @@ S_IMAGE = "only image"
 S_REPORT = "only report"
 S_OTHER = "other pdf"
 
+# Spelled out, no abbreviations - these headings get read by people who do not
+# work with the archive daily, and "DICOMs w/o Report" means nothing to them.
 HEADER = [
     ("Patient Code", 14),
-    ("DICOMs w/ Report", 17),
-    ("Reports Covering Them", 21),
-    ("DICOMs w/o Report", 18),
-    ("Reports w/o Images", 18),
-    ("Other PDFs", 11),
+    ("Image Files That Have a Report", 19),
+    ("Reports Covering Those Images", 19),
+    ("Image Files With No Report", 19),
+    ("Reports With No Images", 18),
+    ("Other PDFs (Not Reports)", 17),
     ("Other Files", 12),
-    ("DICOMs Not In A Study", 21),
+    ("Image Files Not In Any Study", 19),
     ("Total Files", 12),
     ("Total Size", 13),
 ]
@@ -144,23 +147,23 @@ def overview(conn, rows, root):
         ("Archive root", root),
         ("Patients", len(rows)),
         ("", ""),
-        ("DICOM files with a report", reported),
-        ("DICOM files with no report", unreported),
-        ("  reported", pct),
-        ("DICOM files in no study", sum(
+        ("Image files (DICOM) that have a report", reported),
+        ("Image files with no report", unreported),
+        ("Share of image files reported", pct),
+        ("Image files not in any study", sum(
             max(r["dicom_files"] - r["dicom_reported"] - r["dicom_unreported"], 0)
             for r in rows.values())),
         ("", ""),
-        ("Reports covering images", sum(
+        ("Reports that cover images", sum(
             len(r["reports_covering"]) for r in rows.values())),
         ("Reports with no images", total("reports_orphan")),
-        ("Other PDFs (no date - not reports)", total("other_pdf")),
-        ("Other files", total("other_files")),
+        ("Other PDFs (no date - probably not reports)", total("other_pdf")),
+        ("Other files (not images, not PDFs)", total("other_files")),
         ("", ""),
-        ("Patients with images and reports", both),
-        ("Patients with only images", only_img),
-        ("Patients with only reports", only_rep),
-        ("Patients with neither", neither),
+        ("Patients with both images and reports", both),
+        ("Patients with images but no reports", only_img),
+        ("Patients with reports but no images", only_rep),
+        ("Patients with neither images nor reports", neither),
         ("", ""),
         ("Total files", total("total_files")),
         ("Total size", human_bytes(total("size"))),
@@ -210,7 +213,7 @@ def main():
 
     wb = Workbook()
     wb.remove(wb.active)
-    ws = sheet(wb, "Overview", ["Measure", "Value"], (38, 60),
+    ws = sheet(wb, "Overview", ["Measure", "Value"], (44, 60),
                overview(None, rows, root), freeze=False)
     ws.auto_filter.ref = None
 
@@ -226,8 +229,8 @@ def main():
 
     print(f"wrote {args.out}")
     print(f"  {len(data):,} patients")
-    print(f"  {sum(r[1] for r in data):,} DICOM files reported, "
-          f"{sum(r[3] for r in data):,} not reported")
+    print(f"  {sum(r[1] for r in data):,} image files have a report, "
+          f"{sum(r[3] for r in data):,} do not")
     print(f"  {sum(r[4] for r in data):,} reports with no images, "
           f"{sum(r[6] for r in data):,} other files")
 
