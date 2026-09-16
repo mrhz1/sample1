@@ -9,8 +9,13 @@ Sizes are reported the way Windows reports them - KB/MB/GB/TB in multiples of
 against the Properties dialog without having to convert anything.
 
 Usage:
-    python folder_size.py <path> [<path> ...]
+    python folder_size.py <path> [<path> ...] [--workers N]
 
+    --workers N Parallel directory readers (default: 16). A network share is
+                latency-bound, not bandwidth-bound - most of the time is spent
+                waiting for round trips, so 32-64 readers finish several times
+                faster. On a local disk the head is the bottleneck instead;
+                leave it low, 4-8.
     --quiet     No progress line while it runs.
     --bytes     Print the raw byte count only, for scripting.
 
@@ -23,6 +28,8 @@ import argparse
 import os
 import sys
 import time
+from collections import deque
+from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, wait
 
 # Mirrors crawl.py's long_path(). Inlined rather than imported so this file
 # stays a single-file tool you can copy onto a machine by itself - without it,
@@ -50,51 +57,75 @@ def human(n):
         size /= 1024
 
 
-def walk(root, on_progress=None):
-    """(files, bytes, errors), counted with one directory read per directory.
+def scan_one(path):
+    """Read one directory: (subdirs, files, bytes, errors).
 
     os.scandir carries size in the directory entry on Windows, so this never
-    stats a file individually - the difference between one round trip per
-    directory and one per file, which is what makes a million-file share
-    finish in minutes instead of hours.
+    stats a file individually - one round trip per directory instead of one
+    per file, which is most of the speed on a share.
+    """
+    subdirs, files, total, errors = [], 0, 0, 0
+    try:
+        with os.scandir(long_path(path)) as it:
+            for entry in it:
+                try:
+                    if entry.is_dir(follow_symlinks=False):
+                        subdirs.append(entry.path)
+                    elif entry.is_symlink() and entry.is_dir():
+                        # A link to a folder is neither a file nor a folder to
+                        # descend into. Windows junctions land here too, which
+                        # is what stops a share that links back into itself
+                        # being counted twice.
+                        continue
+                    else:
+                        files += 1
+                        total += entry.stat(follow_symlinks=False).st_size
+                except OSError:
+                    errors += 1
+    except OSError:
+        errors += 1
+    return subdirs, files, total, errors
+
+
+def walk(root, workers=16, on_progress=None):
+    """(files, bytes, errors), reading many directories at once.
+
+    Directory reads run in threads because they are I/O waits, not CPU: the
+    GIL is released for the duration of each one, so this scales with share
+    latency the way crawl.py does. Every total is added up on this thread, so
+    there is nothing to lock.
     """
     files = total = errors = 0
-    stack = [root]
-    while stack:
-        current = stack.pop()
-        try:
-            with os.scandir(long_path(current)) as it:
-                for entry in it:
-                    try:
-                        if entry.is_dir(follow_symlinks=False):
-                            stack.append(entry.path)
-                        elif entry.is_symlink() and entry.is_dir():
-                            # A link to a folder is neither a file nor a folder
-                            # to descend into. Windows junctions land here too,
-                            # which is what stops a share that links back into
-                            # itself being counted twice.
-                            continue
-                        else:
-                            files += 1
-                            total += entry.stat(follow_symlinks=False).st_size
-                    except OSError:
-                        errors += 1
-        except OSError:
-            errors += 1
-        if on_progress:
-            on_progress(files, total, len(stack))
+    queue = deque([root])
+    with ThreadPoolExecutor(max_workers=workers) as pool:
+        in_flight = set()
+        while queue or in_flight:
+            # Two reads per worker is enough to hide latency without walking
+            # the whole tree into memory ahead of the counting.
+            while queue and len(in_flight) < workers * 2:
+                in_flight.add(pool.submit(scan_one, queue.popleft()))
+            done, in_flight = wait(in_flight, return_when=FIRST_COMPLETED)
+            for fut in done:
+                subdirs, n_files, n_bytes, n_errors = fut.result()
+                queue.extend(subdirs)
+                files += n_files
+                total += n_bytes
+                errors += n_errors
+            if on_progress:
+                on_progress(files, total, len(queue))
     return files, total, errors
 
 
 def main():
     ap = argparse.ArgumentParser(description=__doc__.split("\n")[0])
     ap.add_argument("paths", nargs="+")
+    ap.add_argument("--workers", type=int, default=16)
     ap.add_argument("--quiet", action="store_true")
     ap.add_argument("--bytes", action="store_true",
                     help="print the byte count only")
     args = ap.parse_args()
 
-    status = {"last": 0.0}
+    status = {"last": 0.0, "started": 0.0}
 
     def progress(files, total, pending):
         if args.quiet or args.bytes or not sys.stderr.isatty():
@@ -103,8 +134,9 @@ def main():
         if now - status["last"] < 0.5:
             return
         status["last"] = now
-        print(f"\r  {files:,} files, {human(total)}, {pending:,} folders left"
-              "   ", end="", file=sys.stderr, flush=True)
+        rate = files / max(now - status["started"], 0.001)
+        print(f"\r  {files:,} files, {human(total)}, {pending:,} folders queued"
+              f", {rate:,.0f} files/s   ", end="", file=sys.stderr, flush=True)
 
     exit_code = 0
     for path in args.paths:
@@ -113,8 +145,8 @@ def main():
             exit_code = 1
             continue
 
-        started = time.time()
-        files, total, errors = walk(path, progress)
+        started = status["started"] = time.time()
+        files, total, errors = walk(path, args.workers, progress)
         if not args.quiet and not args.bytes and sys.stderr.isatty():
             print("\r" + " " * 70 + "\r", end="", file=sys.stderr)
 
