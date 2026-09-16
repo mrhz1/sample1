@@ -563,6 +563,17 @@ def human_bytes(n):
         n /= 1024
 
 
+def _row_kind(s):
+    """Which of the four things a Studies row is, as coverage names them."""
+    if s["status"] == STATUS_OTHER_PDF:
+        return coverage.UNDATED
+    if s["status"] == STATUS_REPORT_ONLY:
+        return coverage.ORPHAN
+    if s["status"] == STATUS_BOTH:
+        return coverage.MATCHED
+    return coverage.UNMATCHED
+
+
 def write_workbook(data, out_path):
     wb = Workbook()
     wb.remove(wb.active)
@@ -575,15 +586,14 @@ def write_workbook(data, out_path):
         if not s_["code"]:
             continue
         code = fmt(s_["code"], W)
-        if s_["status"] == STATUS_OTHER_PDF:
-            cov_detail[code][coverage.UNDATED] += 1
-        elif s_["status"] == STATUS_REPORT_ONLY:
-            cov_detail[code][coverage.ORPHAN] += 1
-        elif s_["status"] == STATUS_BOTH:
-            cov_detail[code][coverage.MATCHED] += 1
-        else:
-            cov_detail[code][coverage.UNMATCHED] += 1
+        cov_detail[code][_row_kind(s_)] += 1
     cov_rows, cov_summary, cov_totals = coverage.classify(data["conn"], cov_detail)
+    # The same rows again, grouped by patient and category, so "partly
+    # covered" can be read without opening the Studies sheet.
+    cov_breakdown = coverage.breakdown_rows(
+        (fmt(s_["code"], W), _row_kind(s_), s_["slices"], s_["modality"],
+         s_["date"])
+        for s_ in data["studies"] if s_["code"])
 
     studies = data["studies"]
     real = [s for s in studies if s["study_id"] is not None]
@@ -665,6 +675,9 @@ def write_workbook(data, out_path):
            for did, n in sorted(data["unassigned_dirs"].items(), key=lambda kv: -kv[1])])
 
     sheet(wb, "Coverage", coverage.HEADER, coverage.WIDTHS, cov_rows)
+
+    sheet(wb, "Breakdown", coverage.BREAKDOWN_HEADER,
+          coverage.BREAKDOWN_WIDTHS, cov_breakdown)
 
     sheet(wb, "Suggestions",
           ["Folder", "Study Date", "Modality", "DICOM Files",

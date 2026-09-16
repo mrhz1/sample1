@@ -44,6 +44,8 @@ UNMATCHED = "only image"
 ORPHAN = "only report"
 UNDATED = "other pdf"
 DETAIL = [MATCHED, UNMATCHED, ORPHAN, UNDATED]
+# What a single row can be, in the order the breakdown lists them.
+ROW_KINDS = DETAIL
 
 # Every count column is named for the Status value it counts, so a number here
 # and the rows behind it on the Studies sheet are found with the same phrase.
@@ -51,6 +53,50 @@ HEADER = ["Patient Code", "DICOM Files", "Report Files", "Other PDFs",
           "Studies", "Report and Image", "Only Image", "Only Report",
           "Category"]
 WIDTHS = (14, 12, 12, 11, 9, 17, 12, 12, 26)
+
+
+BREAKDOWN_HEADER = ["Patient Code", "Category", "Studies", "DICOM Files",
+                    "Modalities", "Dates"]
+BREAKDOWN_WIDTHS = (14, 20, 9, 12, 26, 60)
+
+# A patient with 40 studies would otherwise push a cell past what anyone can
+# read, and past Excel's 32k character limit at the extreme.
+MAX_DATES = 12
+
+
+def join_dates(dates):
+    dates = sorted(d for d in dates if d)
+    if not dates:
+        return ""
+    if len(dates) <= MAX_DATES:
+        return ", ".join(dates)
+    return ", ".join(dates[:MAX_DATES]) + f"  (+{len(dates) - MAX_DATES} more)"
+
+
+def breakdown_rows(records):
+    """One row per (patient, category), from (code, category, slices,
+    modality, date) records.
+
+    Coverage says a patient is partly covered; this says which studies are on
+    which side of that - how many slices, what modalities, and on what dates -
+    so the patient does not have to be looked up study by study.
+    """
+    groups = {}
+    order = {name: i for i, name in enumerate(ROW_KINDS)}
+    for code, category, slices, modality, date in records:
+        g = groups.setdefault((code, category),
+                              {"n": 0, "slices": 0, "mods": set(), "dates": set()})
+        g["n"] += 1
+        g["slices"] += slices or 0
+        if modality:
+            g["mods"].add(modality)
+        if date:
+            g["dates"].add(date)
+    rows = [[code, category, g["n"], g["slices"],
+             ", ".join(sorted(g["mods"])), join_dates(g["dates"])]
+            for (code, category), g in groups.items()]
+    rows.sort(key=lambda r: (r[0], order.get(r[1], 99)))
+    return rows
 
 
 def new_detail():
@@ -133,7 +179,7 @@ def print_summary(summary, totals=None, indent="  "):
             print(f"{indent}{'rows: ' + name:<{width}} {totals.get(name, 0):>8,}")
 
 
-def write_workbook(rows, summary, totals, path):
+def write_workbook(rows, summary, totals, path, breakdown=None):
     """The buckets and the patients behind them, as its own workbook.
 
     Kept separate from match_report.xlsx on purpose: that file reproduces
@@ -163,4 +209,16 @@ def write_workbook(rows, summary, totals, path):
         ws.column_dimensions[letter].width = width
     ws.freeze_panes = "A2"
     ws.auto_filter.ref = f"A1:I{ws.max_row}"
+
+    if breakdown is not None:
+        ws = wb.create_sheet("Breakdown")
+        ws.append(BREAKDOWN_HEADER)
+        for cell in ws[1]:
+            cell.font = Font(bold=True)
+        for row in breakdown:
+            ws.append(row)
+        for letter, width in zip("ABCDEF", BREAKDOWN_WIDTHS):
+            ws.column_dimensions[letter].width = width
+        ws.freeze_panes = "A2"
+        ws.auto_filter.ref = f"A1:F{ws.max_row}"
     wb.save(path)

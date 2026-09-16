@@ -174,6 +174,15 @@ def collect_studies(conn, dirs):
     return studies, unassigned
 
 
+def row_kind(status):
+    """Which of coverage's four row kinds a legacy status row is."""
+    if status == STATUS_MATCHED:
+        return coverage.MATCHED
+    if status == STATUS_NO_IMAGES:
+        return coverage.ORPHAN
+    return coverage.UNMATCHED
+
+
 def rows_for_code(code, code_studies, code_reports):
     """One code's rows, in match_reports.py's order: studies first, sorted by
     date then modality, then any report nothing could be paired with."""
@@ -311,6 +320,7 @@ def main():
         results_dir.mkdir(parents=True, exist_ok=True)
 
     combined = []
+    cov_records = []
     cov_detail = coverage.new_detail()
     totals = defaultdict(int)
     n_files = 0
@@ -329,6 +339,10 @@ def main():
         cov_detail[code][coverage.ORPHAN] += (
             stats["unmatched_pdf"] - stats["undated_pdf"])
         cov_detail[code][coverage.UNDATED] += stats["undated_pdf"]
+        for row in rows:
+            kind = (coverage.UNDATED if row[5] == STATUS_NO_IMAGES and not row[1]
+                    else row_kind(row[5]))
+            cov_records.append((code, kind, row[3] or 0, row[2], row[1]))
         combined.extend(rows)
         if not args.no_per_code:
             write_summary_sheet(result_path(results_dir, code), rows)
@@ -379,7 +393,8 @@ def main():
     coverage.print_summary(cov_summary, cov_totals)
     if args.coverage:
         coverage.write_workbook(cov_rows, cov_summary, cov_totals,
-                                args.coverage)
+                                args.coverage,
+                                coverage.breakdown_rows(cov_records))
         print(f"\n  patient coverage detail: {args.coverage}")
 
 

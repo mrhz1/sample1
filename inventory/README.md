@@ -77,6 +77,7 @@ to have in an inventory.
 | `Studies` | study | date, modality, slice count, matched report, match tier |
 | `Unassigned` | folder | files with no derivable code - **the work queue** |
 | `Coverage` | patient code | images / reports / both, and what is missing |
+| `Breakdown` | patient code x category | the slices, modalities and dates behind each |
 | `Suggestions` | orphan study | candidate codes recovered by cross-referencing reports |
 | `Conflicts` | file | filename and folder disagree about the code |
 
@@ -191,6 +192,33 @@ The per-study verdicts come from each tool's own matching rather than from
 **"Has images" means at least one file identified as DICOM, not at least one
 study.** A folder whose headers could not be parsed still holds images;
 counting studies would quietly file it under "no images".
+
+## The `Breakdown` sheet: what is actually on each side
+
+`Coverage` says AA0006 is partly covered. `Breakdown` says which studies are on
+which side of that, without opening `Studies` and filtering by hand:
+
+```
+Patient Code  Category           Studies  DICOM Files  Modalities  Dates
+AA0003        report and image         1           90  Echo        20170219
+AA0003        only image               1           40  Echo        20151007
+AA0006        report and image         1           12  MRI         20170206
+AA0006        only image               1           40  X-Ray       20220206
+AA0006        only report              1            0              20230523
+AA0006        other pdf                1            0
+AA0012        report and image         2           52  CT, MRI     20180427, 20190912
+```
+
+One row per patient per category, so a patient appears once for each side they
+have something on. `DICOM Files` is 0 on the two PDF categories by definition -
+there are no images behind them.
+
+Patients with a long history get their dates capped at 12 followed by
+`(+N more)`, which keeps the cell readable and well inside Excel's limit.
+
+`report.py` writes it as a sheet; `match_report_from_db.py --coverage` writes
+the same sheet into its coverage workbook. Both are built by `coverage.py` from
+each tool's own matching, and the two come out identical.
 
 ## The old `match_reports.py` format
 
