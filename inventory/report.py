@@ -79,6 +79,26 @@ else:
 
     def parse_pdf_date(name, date_order="dmy"):
         return _parse_pdf_date(name)
+
+
+def parse_pdf_dates(name, date_order="dmy"):
+    """Every valid reading of the first date in a name, preferred one first.
+
+    "12-09-2020" is 12 September or 9 December depending on a convention the
+    file name does not state, and a real archive is often mixed. The DICOM
+    header's date is not ambiguous - it is stored as YYYYMMDD - so both
+    readings are kept and the match decides which was meant. A date with a
+    number over 12, an ISO date or a month name has only one reading and is
+    unaffected.
+    """
+    primary = parse_pdf_date(name, date_order)
+    if primary is None:
+        return ()
+    other = "mdy" if date_order == "dmy" else "dmy"
+    alt = parse_pdf_date(name, other)
+    if alt is None or alt == primary:
+        return (primary,)
+    return (primary, alt)
 import coverage  # noqa: E402
 from probe import KNOWN_EXTS  # noqa: E402
 
@@ -98,6 +118,7 @@ NOTE_NO_REPORT = "no report anywhere for this patient"
 NOTE_UNASSIGNED = "folder carries no code - see Suggestions"
 NOTE_NO_IMAGES = "no images found for this report"
 NOTE_NO_DATE = "no date in the file name - probably not a study report"
+NOTE_AMBIGUOUS = " (ambiguous date - read the other way round)"
 
 KIND_COLUMNS = ["dicom", "dicomdir", "pdf", "word", "excel", "slides", "image",
                 "video", "archive", "program", "text", "office", "unknown",
@@ -376,10 +397,10 @@ def build(args):
 
         if kind == "pdf":
             folder_name = os.path.basename(dir_paths[did])
-            date = (parse_pdf_date(name, args.date_order)
-                    or parse_pdf_date(folder_name, args.date_order))
+            dates = (parse_pdf_dates(name, args.date_order)
+                     or parse_pdf_dates(folder_name, args.date_order))
             modality = parse_pdf_modality(name) or parse_pdf_modality(folder_name)
-            entry = (full, date, modality, name)
+            entry = (full, dates, modality, name)
             if code:
                 reports[code].append(entry)
             else:
@@ -458,15 +479,20 @@ def match_studies(conn, dir_code, dir_paths, reports, args):
         if not code:
             note = NOTE_UNASSIGNED
         else:
-            exact = [r for r in cands if r[1] and r[1] == date
+            exact = [r for r in cands if date and date in r[1]
                      and r[2] and modality and r[2] == modality]
-            same_day = [r for r in cands if r[1] and r[1] == date]
+            same_day = [r for r in cands if date and date in r[1]]
             if exact:
                 matched, status, note = exact[0], STATUS_BOTH, NOTE_DATE_MODALITY
             elif same_day:
                 matched, status, note = same_day[0], STATUS_BOTH, NOTE_DATE_ONLY
             elif cands:
                 note = NOTE_NO_DATE_MATCH
+        if matched and matched[1] and date != matched[1][0]:
+            # It matched on the second reading of an ambiguous numeric date,
+            # which is worth saying out loud - it is the one kind of match a
+            # person might want to spot-check.
+            note += NOTE_AMBIGUOUS
         if matched:
             used[code].add(matched[0])
         out.append(dict(
@@ -477,7 +503,8 @@ def match_studies(conn, dir_code, dir_paths, reports, args):
             status=status, note=note))
 
     for code, items in reports.items():
-        for path, date, modality, name in items:
+        for path, dates, modality, name in items:
+            date = dates[0] if dates else None
             if path not in used[code]:
                 # A report carries a date; a consent form or a manual filed in
                 # the same folder does not, and can never match a study. Saying
@@ -540,8 +567,8 @@ def suggest(studies, reports):
     """
     index = defaultdict(set)
     for code, items in reports.items():
-        for _, date, modality, _ in items:
-            if date:
+        for _, dates, modality, _ in items:
+            for date in dates:
                 index[(date, modality)].add(code)
                 index[(date, None)].add(code)
 

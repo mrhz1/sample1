@@ -65,7 +65,7 @@ from match_reports import (  # noqa: E402  - reuse, don't reimplement
     result_path,
     write_summary_sheet,
 )
-from report import parse_pdf_date, parse_pdf_modality  # noqa: E402
+from report import parse_pdf_dates, parse_pdf_modality  # noqa: E402
 
 # The four strings match_reports.py puts in the Match Status column. Kept
 # together because they are the contract with whatever reads these files.
@@ -120,16 +120,16 @@ def collect_reports(conn, dirs, date_order):
         if not code:
             orphans += 1
             continue
-        date = modality = None
+        dates, modality = (), None
         for part in name_chain(dir_id, name, dirs):
-            if date is None:
-                date = parse_pdf_date(part, date_order)
+            if not dates:
+                dates = parse_pdf_dates(part, date_order)
             if modality is None:
                 modality = parse_pdf_modality(part)
-            if date is not None and modality is not None:
+            if dates and modality is not None:
                 break
         full = os.path.join(dirs[dir_id][0], name)
-        reports[code].append((full, date, modality))
+        reports[code].append((full, dates, modality))
     return reports, orphans
 
 
@@ -137,12 +137,14 @@ def build_indices(entries):
     """One code's reports -> (by (date, modality), by date) lookups."""
     by_date_modality = defaultdict(list)
     by_date = defaultdict(list)
-    for full, date, modality in entries:
-        if date is None:
-            continue
-        by_date[date].append(full)
-        if modality is not None:
-            by_date_modality[(date, modality)].append(full)
+    for full, dates, modality in entries:
+        # Both readings of an ambiguous numeric date are indexed; the DICOM
+        # header's date is unambiguous, so whichever it lands on was the one
+        # the file name meant. See parse_pdf_dates in report.py.
+        for date in dates:
+            by_date[date].append(full)
+            if modality is not None:
+                by_date_modality[(date, modality)].append(full)
     return by_date_modality, by_date
 
 
@@ -221,11 +223,12 @@ def rows_for_code(code, code_studies, code_reports):
             status,
         ])
 
-    for full, date, modality in sorted(
-        code_reports, key=lambda e: (e[1] or "", e[2] or "")
+    for full, dates, modality in sorted(
+        code_reports, key=lambda e: (e[1][0] if e[1] else "", e[2] or "")
     ):
         if full in matched_paths:
             continue
+        date = dates[0] if dates else None
         rows.append([
             code,
             date or "",
@@ -237,7 +240,7 @@ def rows_for_code(code, code_studies, code_reports):
         stats["unmatched_pdf"] += 1
         # No date means it can never match a study - a consent form or a
         # manual, not a report whose images are missing.
-        if not date:
+        if not dates:
             stats["undated_pdf"] += 1
 
     return rows, stats

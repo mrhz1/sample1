@@ -367,6 +367,31 @@ with the stamp of the run that wrote what they are showing:
 codes written by report.py at 2026-09-16 14:27:02  (--prefixes AA --digits 4)
 ```
 
+**A report that obviously matches is reported as unmatched.** `12-09-2020` is
+either 12 September or 9 December - the file name does not say which, and a
+real archive is often mixed. The DICOM header is not ambiguous, since it stores
+`20201209`, so both readings are now kept and the match decides which the name
+meant:
+
+```
+AA0976 12-09-2020 Echo.pdf   ->  20200912, 20201209   both tried
+AA0976 22-11-2018 Echo.pdf   ->  20181122             only one reading possible
+AA0976 2020-12-09 Echo.pdf   ->  20201209             ISO, unambiguous
+AA0976 09-DEC-2020.pdf       ->  20201209             month name, unambiguous
+```
+
+Only a date whose two numbers are both 12 or less has a second reading, so
+nothing else changes. A match made on the second reading says so in `Note`:
+
+```
+status: report and image
+note  : matched on date + modality (ambiguous date - read the other way round)
+```
+
+`--date-order` still sets which reading is preferred and which is the fallback,
+and it is the one that appears in the `Study Date` column when a report goes
+unmatched.
+
 **Codes padded too wide** (`AA0001` coming out as `AA000001`) was a bug, fixed
 in two places. A folder called `AA 20240115 rescan` used to match as `AA20240`:
 an invented patient whose long number then repadded every real code. Now the
