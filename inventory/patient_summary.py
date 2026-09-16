@@ -24,6 +24,12 @@ Usage:
     --db PATH        Database, after crawl.py, probe.py and report.py.
     --out PATH       Workbook to write (default patient_summary.xlsx).
     --prefix LIST    Only these prefixes, comma-separated.
+    --find-duplicates
+                     Build the duplicate index first if it is missing. Off by
+                     default because it is a one-off pass over every stored
+                     header - minutes on a large archive - and this script is
+                     otherwise instant. Without it the duplicate column reads
+                     "not checked" rather than a misleading 0.
 """
 
 import argparse
@@ -74,8 +80,11 @@ def code_prefix(code):
     return m.group(0).upper() if m else ""
 
 
+NOT_CHECKED = "not checked"
+
+
 def collect(conn):
-    """code -> every number on the patient line."""
+    """(code -> every number on the patient line, whether duplicates are known)."""
     rows = {}
 
     def row(code):
@@ -100,12 +109,14 @@ def collect(conn):
         elif status == S_OTHER:
             r["other_pdf"] += 1
 
-    # Redundant copies, if find_duplicates.py has been run. Absent rather than
-    # zero when it has not - a blank column invites the question, a zero
-    # answers it wrongly.
+    # Redundant copies, if the duplicate index exists. Said to be unknown
+    # rather than reported as zero when it does not - a zero answers the
+    # question wrongly, and it is the answer people act on.
     have = {r[0] for r in conn.execute(
         "SELECT name FROM sqlite_master WHERE type = 'table'")}
-    if "dicom_uid" in have:
+    dupes_known = "dicom_uid" in have and conn.execute(
+        "SELECT 1 FROM dicom_uid LIMIT 1").fetchone() is not None
+    if dupes_known:
         for code, n in conn.execute("""
                 SELECT code, SUM(n - 1) FROM (
                     SELECT f.code AS code, u.uid AS uid, COUNT(*) AS n
@@ -127,23 +138,25 @@ def collect(conn):
             r["pdf_files"] += n
         else:
             r["other_files"] += n
-    return rows
+    return rows, dupes_known
 
 
-def build_rows(rows):
+def build_rows(rows, dupes_known=True):
     """Totals first, then the split - so a reader can see the whole before
     the parts, and spot it when the parts do not add up to it."""
     out = []
     for code in sorted(rows):
         r = rows[code]
-        out.append([code, r["dicom_files"], r["duplicates"], r["pdf_files"],
+        out.append([code, r["dicom_files"],
+                    r["duplicates"] if dupes_known else NOT_CHECKED,
+                    r["pdf_files"],
                     r["dicom_reported"], r["dicom_unreported"],
                     r["reports_orphan"], r["other_pdf"],
                     r["total_files"], human_bytes(r["size"])])
     return out
 
 
-def overview(conn, rows, root):
+def overview(conn, rows, root, dupes_known=True):
     total = lambda k: sum(r[k] for r in rows.values())  # noqa: E731
     reported = total("dicom_reported")
     unreported = total("dicom_unreported")
@@ -167,7 +180,8 @@ def overview(conn, rows, root):
         ("Image files with no report", unreported),
         ("Share of image files reported", pct),
         ("Duplicate image files (redundant copies)",
-         sum(r["duplicates"] for r in rows.values())),
+         sum(r["duplicates"] for r in rows.values()) if dupes_known
+         else "not checked - run find_duplicates.py"),
         ("Image files not in any study", sum(
             max(r["dicom_files"] - r["dicom_reported"] - r["dicom_unreported"], 0)
             for r in rows.values())),
@@ -227,10 +241,23 @@ def main():
     ap.add_argument("--db", default="inventory.db")
     ap.add_argument("--out", default="patient_summary.xlsx")
     ap.add_argument("--prefix", default=None)
+    ap.add_argument("--find-duplicates", action="store_true")
     args = ap.parse_args()
 
     if not os.path.exists(args.db):
         sys.exit(f"no such database: {args.db}")
+    # Read-only by default: this script only reports. --find-duplicates is the
+    # one thing it can be asked to compute, and that needs to write its cache.
+    if args.find_duplicates:
+        import find_duplicates
+        rw = sqlite3.connect(args.db)
+        if "dicom_meta" not in {r[0] for r in rw.execute(
+                "SELECT name FROM sqlite_master WHERE type = 'table'")}:
+            sys.exit("no dicom_meta table - run probe.py --metadata all first")
+        print("building the duplicate index (one-off)...")
+        find_duplicates.build_identities(rw, rebuild=False)
+        rw.close()
+
     conn = sqlite3.connect(f"file:{os.path.abspath(args.db)}?mode=ro", uri=True)
     have = {r[0] for r in conn.execute(
         "SELECT name FROM sqlite_master WHERE type = 'table'")}
@@ -239,7 +266,7 @@ def main():
 
     root = conn.execute("SELECT value FROM meta WHERE key='root'").fetchone()[0]
     banner = attribution_banner(conn)
-    rows = collect(conn)
+    rows, dupes_known = collect(conn)
     if args.prefix:
         wanted = {p.strip().upper() for p in args.prefix.split(",") if p.strip()}
         rows = {c: r for c, r in rows.items() if code_prefix(c) in wanted}
@@ -250,10 +277,10 @@ def main():
     wb = Workbook()
     wb.remove(wb.active)
     ws = sheet(wb, "Overview", ["Measure", "Value"], (44, 60),
-               overview(None, rows, root), freeze=False)
+               overview(None, rows, root, dupes_known), freeze=False)
     ws.auto_filter.ref = None
 
-    data = build_rows(rows)
+    data = build_rows(rows, dupes_known)
     ws = sheet(wb, "Patients", [h for h, _ in HEADER], [w for _, w in HEADER],
                data)
     # Anything outstanding on a row is worth the eye landing on it.
@@ -270,9 +297,15 @@ def main():
           f"{sum(r[5] for r in data):,} do not")
     print(f"  {sum(r[6] for r in data):,} reports with no DICOM, "
           f"{sum(r[7] for r in data):,} other PDFs")
-    dupes = sum(r[2] for r in data if isinstance(r[2], int))
-    if dupes:
-        print(f"  {dupes:,} redundant DICOM copies (see find_duplicates.py)")
+    if not dupes_known:
+        print("  duplicate images: NOT CHECKED - the column says so rather than"
+              " showing 0.\n"
+              "    python find_duplicates.py --db <db>        (once, then re-run"
+              " this)\n"
+              "    or re-run this with --find-duplicates")
+    else:
+        dupes = sum(r[2] for r in data if isinstance(r[2], int))
+        print(f"  {dupes:,} redundant DICOM copies")
 
 
 if __name__ == "__main__":

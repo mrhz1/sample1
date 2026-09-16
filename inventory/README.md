@@ -257,8 +257,19 @@ is wrong.
 
 Identities are cached in a `dicom_uid` table, so the expensive part runs once.
 `patient_summary.py` then shows a `Duplicate DICOM Images` column beside the
-total - blank until this has been run, rather than zero, since a zero would
-answer the question wrongly.
+total. Until the index exists that column reads **`not checked`**, never `0` -
+a zero is the answer people act on, and "we have no duplicates" is a very
+different statement from "nobody looked". The run also says so:
+
+```
+duplicate images: NOT CHECKED - the column says so rather than showing 0.
+  python find_duplicates.py --db <db>        (once, then re-run this)
+  or re-run this with --find-duplicates
+```
+
+`patient_summary.py --find-duplicates` builds the index inline. It is not the
+default because it is a one-off pass over every stored header - minutes on a
+large archive - and the summary is otherwise instant.
 
 ### Two files look identical but the count does not move
 
