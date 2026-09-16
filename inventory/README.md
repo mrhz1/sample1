@@ -220,6 +220,43 @@ Patients with a long history get their dates capped at 12 followed by
 the same sheet into its coverage workbook. Both are built by `coverage.py` from
 each tool's own matching, and the two come out identical.
 
+## `patient_summary.py`: one line per patient
+
+A second, smaller workbook for the question "what exactly does AA0001 have?" -
+just two sheets, no study-level detail:
+
+```bash
+python patient_summary.py --db inventory.db --out patient_summary.xlsx
+```
+
+```
+Patient  DICOMs w/ Report  Reports Covering Them  DICOMs w/o Report  Reports w/o Images  Other PDFs  Other Files
+AA0003                 90                      1                 40                   0           0            0
+AA0006                 12                      1                 40                   1           1            3
+AVDD004                52                      2                 40                   0           0            2
+```
+
+**These are DICOM *files*, not studies.** `master_report.xlsx` counts studies,
+because that is the unit a report is written about; this counts the files
+underneath them, because that is the unit the archive is measured in. A patient
+with one reported study of 400 slices and one unreported study of 200 appears
+here as 400 and 200, and there as 1 and 1. Both are right - this is the one
+people mean when they ask how much is outstanding.
+
+`Reports Covering Them` is how many distinct PDFs account for the reported
+side: one report can cover 400 slices, or several can.
+
+`DICOMs Not In A Study` catches any DICOM attributed to the patient that no
+study accounts for - a header `probe.py` could not read. It is normally 0, and
+it is shown rather than absorbed so the columns add up: `DICOMs w/ Report` +
+`w/o Report` + `Not In A Study` is exactly the patient's DICOM file count, and
+that plus the PDFs plus `Other Files` is `Total Files`. Rows with anything
+outstanding are shaded.
+
+It reads the matching `report.py` already wrote to `study_report`, so nothing
+is re-matched and the two files cannot disagree - which does mean `report.py`
+has to have been run first.
+
 ## The old `match_reports.py` format
 
 Whatever already reads `match_report.xlsx` and `results/<code>-results.xlsx`
