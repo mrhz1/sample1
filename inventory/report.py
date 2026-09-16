@@ -37,6 +37,8 @@ Usage:
                      to them. Writes nothing.
     --prefixes LIST  Comma-separated study prefixes to treat as patient codes.
     --code-regex RE  Full override, if --prefixes isn't expressive enough.
+    --digits SPEC    How many digits a code has: '4' for exactly four,
+                     '3-5' for a range. Default 1-5.
     --date-order X   Reading of ambiguous numeric dates: dmy (default) or mdy.
     --pad SPEC       Force the display width of the number instead of learning
                      it. '4' applies to every prefix, 'AA=4,AVDD=3' per prefix.
@@ -160,16 +162,41 @@ def discover(conn):
     print("normalised on the number, so AA001 and AA0001 are one patient.")
 
 
-def build_code_re(prefixes, override):
+def parse_digits(spec):
+    """'4' -> exactly 4 digits; '3-5' -> between 3 and 5; default 1-5."""
+    spec = (spec or "1-5").strip()
+    if "-" in spec:
+        lo, _, hi = spec.partition("-")
+        return int(lo), int(hi)
+    return int(spec), int(spec)
+
+
+def build_code_re(prefixes, override, digits=None):
     if override:
         return re.compile(override, re.IGNORECASE)
     if not prefixes:
         sys.exit("give --prefixes (run --discover first) or --code-regex")
     alt = "|".join(re.escape(p.strip()) for p in prefixes.split(",") if p.strip())
-    # (?!\d) matters more than it looks. Without it "AA 20240115 rescan" matches
-    # as AA20240 - a patient who does not exist, whose 5-digit number then pads
-    # every real AA0001 to AA00001. A code is the whole digit run or nothing.
-    return re.compile(rf"(?:{alt})[-_ ]?\d{{1,5}}(?!\d)", re.IGNORECASE)
+    lo, hi = parse_digits(digits)
+    # The trailing guard carries most of the weight. A code is a prefix, a
+    # digit run, and then something that is not a letter or a digit:
+    #   AA 20240115 rescan -> no match (the run is longer than a code)
+    #   AA1234AA           -> no match (letters after the digits)
+    #   AA0001 follow up   -> AA0001
+    # Without it the first invents a patient whose long number repads every
+    # real code, and the second invents one out of a filename fragment.
+    return re.compile(rf"(?:{alt})[-_ ]?\d{{{lo},{hi}}}(?![A-Za-z0-9])",
+                      re.IGNORECASE)
+
+
+def pattern_hints(pattern):
+    """The literal prefixes in a code pattern, for the cheap pre-filter.
+
+    Lookarounds are stripped first - a character class like [A-Za-z0-9] inside
+    one would otherwise contribute "Za" as a prefix and match half the archive.
+    """
+    core = re.sub(r"\(\?<?[!=][^)]*\)", "", pattern)
+    return tuple(re.findall(r"[A-Za-z]{2,10}", core))
 
 
 def parse_code(text, code_re):
@@ -214,7 +241,7 @@ def attribute(conn, code_re, prefer, root):
 
     # Cheapest possible pre-filter: a name can only hold a code if it contains
     # one of the prefixes. Skips the regex on millions of DICOM slice names.
-    hints = tuple(re.findall(r"[A-Za-z]{2,10}", code_re.pattern))
+    hints = pattern_hints(code_re.pattern)
 
     def rows():
         cur = conn.execute("SELECT id, dir_id, name, ext, size FROM files")
@@ -296,7 +323,7 @@ def kind_of(ext, probed):
 def build(args):
     conn = sqlite3.connect(args.db)
     root = conn.execute("SELECT value FROM meta WHERE key='root'").fetchone()[0]
-    code_re = build_code_re(args.prefixes, args.code_regex)
+    code_re = build_code_re(args.prefixes, args.code_regex, args.digits)
 
     probed_kind = dict(conn.execute(
         "SELECT id, kind FROM files WHERE kind IS NOT NULL"))
@@ -704,6 +731,7 @@ def main():
     ap.add_argument("--discover", action="store_true")
     ap.add_argument("--prefixes", default=None)
     ap.add_argument("--code-regex", default=None)
+    ap.add_argument("--digits", default="1-5")
     ap.add_argument("--date-order", default="dmy", choices=["dmy", "mdy"])
     ap.add_argument("--pad", default=None)
     ap.add_argument("--prefer", default="filename", choices=["filename", "folder"])

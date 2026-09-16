@@ -30,6 +30,7 @@ from report import (  # noqa: E402
     CANDIDATE_RE,
     build_code_re,
     parse_code,
+    pattern_hints,
     resolve_widths,
 )
 
@@ -204,6 +205,7 @@ def main():
     ap.add_argument("--db", default="inventory.db")
     ap.add_argument("--prefixes", default=None)
     ap.add_argument("--code-regex", default=None)
+    ap.add_argument("--digits", default="1-5")
     ap.add_argument("--examples", type=int, default=5)
     args = ap.parse_args()
 
@@ -218,8 +220,8 @@ def main():
     if not prefixes and not args.code_regex:
         print("\nGive --prefixes to analyse padding and --discover behaviour.")
         return
-    code_re = build_code_re(prefixes, args.code_regex)
-    hints = sorted(set(re.findall(r"[A-Za-z]{2,10}", code_re.pattern)))
+    code_re = build_code_re(prefixes, args.code_regex, args.digits)
+    hints = sorted(set(pattern_hints(code_re.pattern)))
 
     section_padding(conn, code_re, hints, args.examples)
     section_discover(conn, hints, args.examples)

@@ -333,6 +333,16 @@ read it, and you pass the real ones to `--prefixes`.
 python diagnose_codes.py --db inventory.db --prefixes AA
 ```
 
+**A name like `AA1234AA` invented a patient.** A code is a prefix, a digit run,
+and then something that is not a letter or a digit. The guard on the end of the
+pattern enforces all of that, so `AA1234AA` matches nothing rather than
+yielding `AA1234`, and `AA 20240115 rescan` matches nothing rather than
+inventing `AA20240`. Legitimate names are untouched: `AA0001 follow up`,
+`AA0001.pdf` and `AA0001-results.xlsx` all still resolve to `AA0001`.
+
+If your codes are always a fixed width, `--digits 4` says so outright and
+refuses anything else; `--digits 3-5` takes a range. The default is 1-5.
+
 **Codes padded too wide** (`AA0001` coming out as `AA000001`) was a bug, fixed
 in two places. A folder called `AA 20240115 rescan` used to match as `AA20240`:
 an invented patient whose long number then repadded every real code. Now the
@@ -346,7 +356,7 @@ a minimum, so a genuine `AA12345` still prints in full.
 
 **`--discover` doesn't list a prefix that is obviously there.** The two patterns
 are not the same: `--discover` is word-bounded on both sides, while
-`--prefixes AA` builds `(?:AA)[-_ ]?\d{1,5}(?!\d)` with no bounds at all. So
+`--prefixes AA` builds `(?:AA)[-_ ]?\d{1,5}(?![A-Za-z0-9])`. So
 `SCANAA0001` is invisible to `--discover` and still matched by `--prefixes` -
 which is why a prefix can be missing from the table and attribute thousands of
 files anyway. Section 4 of the diagnosis shows which names fall in that gap.
