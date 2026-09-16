@@ -161,13 +161,47 @@ patients that don't exist.
 So `--discover` lists every code-like token with counts and an example, you
 read it, and you pass the real ones to `--prefixes`.
 
+## When the codes come out wrong
+
+`diagnose_codes.py` reads the database and says why. It writes nothing:
+
+```bash
+python diagnose_codes.py --db inventory.db --prefixes AA
+```
+
+**Codes padded too wide** (`AA0001` coming out as `AA000001`) was a bug, fixed
+in two places. A folder called `AA 20240115 rescan` used to match as `AA20240`:
+an invented patient whose long number then repadded every real code. Now the
+pattern ends in `(?!\d)`, so a code is the whole digit run or nothing, and that
+name is left unassigned where it belongs. Padding is also learned from the
+*most common* width rather than the widest, so a few odd names can no longer
+repad thousands of real ones. Longer numbers are never truncated - the width is
+a minimum, so a genuine `AA12345` still prints in full.
+
+`--pad 4` (or `--pad AA=4,AVDD=3`) forces the width if you still need to.
+
+**`--discover` doesn't list a prefix that is obviously there.** The two patterns
+are not the same: `--discover` is word-bounded on both sides, while
+`--prefixes AA` builds `(?:AA)[-_ ]?\d{1,5}(?!\d)` with no bounds at all. So
+`SCANAA0001` is invisible to `--discover` and still matched by `--prefixes` -
+which is why a prefix can be missing from the table and attribute thousands of
+files anyway. Section 4 of the diagnosis shows which names fall in that gap.
+
+**The Excel file shows codes the database doesn't have.** `report.py` clears
+every code at the start of each run, so only the last run survives in the
+database. A workbook from an earlier run, or one built against a different
+`--db`, will disagree with it. Section 1 prints the database's root and row
+counts so you can tell which one you are looking at.
+
 ## Normalising codes
 
 `AA001`, `AA_1` and `AA0001` are one patient. Left alone they become three and
 the error is invisible in a total - it just looks like more patients with fewer
 files each. Codes are keyed on **prefix + integer**, so padding cannot split
 them, and padding width is learned per prefix (`AVDD001` is 3 digits, `AA0001`
-is 4; a single global setting would corrupt one of them).
+is 4; a single global setting would corrupt one of them). The width is the most
+common one seen for that prefix, so a stray name cannot widen the rest, and it
+is a minimum rather than a fixed size - a longer number still prints in full.
 
 ## Querying the database directly
 

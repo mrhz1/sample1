@@ -38,6 +38,10 @@ Usage:
     --prefixes LIST  Comma-separated study prefixes to treat as patient codes.
     --code-regex RE  Full override, if --prefixes isn't expressive enough.
     --date-order X   Reading of ambiguous numeric dates: dmy (default) or mdy.
+    --pad SPEC       Force the display width of the number instead of learning
+                     it. '4' applies to every prefix, 'AA=4,AVDD=3' per prefix.
+                     Use when one junk name has widened a whole prefix - see
+                     diagnose_codes.py.
     --prefer WHICH   On a filename/folder conflict, trust 'filename' (default)
                      or 'folder'.
     --csv PATH       Also dump the file-level inventory to CSV. Millions of
@@ -82,7 +86,7 @@ KIND_COLUMNS = ["dicom", "dicomdir", "pdf", "word", "excel", "slides", "image",
 # Anything shaped like a code, used only by --discover. Deliberately loose: it
 # will match "batch 1" too, which is the point - you look at the counts and
 # decide what is real rather than trusting a guess.
-CANDIDATE_RE = re.compile(r"\b([A-Za-z]{2,10})[-_ ]?(\d{1,5})\b")
+CANDIDATE_RE = re.compile(r"\b([A-Za-z]{2,10})[-_ ]?(\d+)\b")
 
 # Codes live on files/dirs themselves (see crawl.py), so pass 3 creates no
 # tables of its own - only the index, once the column is populated.
@@ -126,12 +130,12 @@ def discover(conn):
             hits[p][len(digits)] += 1
             examples.setdefault(p, name)
 
-    print(f"{'PREFIX':<12} {'COUNT':>9}  {'DIGIT WIDTHS':<16} EXAMPLE")
-    print("-" * 78)
+    print(f"{'PREFIX':<12} {'COUNT':>9}  {'DIGIT WIDTHS':<26} EXAMPLE")
+    print("-" * 88)
     for prefix, widths in sorted(hits.items(), key=lambda kv: -sum(kv[1].values())):
         total = sum(widths.values())
         w = ", ".join(f"{k}({v:,})" for k, v in sorted(widths.items()))
-        print(f"{prefix:<12} {total:>9,}  {w:<16} {examples[prefix][:32]}")
+        print(f"{prefix:<12} {total:>9,}  {w:<26} {examples[prefix][:32]}")
     print("\nPick the real study prefixes and pass them, e.g.:")
     print("  python report.py --db inventory.db --prefixes AA,AVDD,QQQ")
     print("\nMixed digit widths for one prefix are fine and expected - they are")
@@ -144,7 +148,10 @@ def build_code_re(prefixes, override):
     if not prefixes:
         sys.exit("give --prefixes (run --discover first) or --code-regex")
     alt = "|".join(re.escape(p.strip()) for p in prefixes.split(",") if p.strip())
-    return re.compile(rf"(?:{alt})[-_ ]?\d{{1,5}}", re.IGNORECASE)
+    # (?!\d) matters more than it looks. Without it "AA 20240115 rescan" matches
+    # as AA20240 - a patient who does not exist, whose 5-digit number then pads
+    # every real AA0001 to AA00001. A code is the whole digit run or nothing.
+    return re.compile(rf"(?:{alt})[-_ ]?\d{{1,5}}(?!\d)", re.IGNORECASE)
 
 
 def parse_code(text, code_re):
@@ -170,7 +177,7 @@ def attribute(conn, code_re, prefer, root):
                  " WHERE code_source IS NOT NULL")
 
     dir_paths = dict(conn.execute("SELECT id, path FROM dirs"))
-    widths = defaultdict(int)
+    widths = defaultdict(Counter)
 
     dir_code = {}
     for dir_id, path in dir_paths.items():
@@ -182,7 +189,7 @@ def attribute(conn, code_re, prefer, root):
                 break
         if found:
             prefix, number, w = found
-            widths[prefix] = max(widths[prefix], w)
+            widths[prefix][w] += 1
             dir_code[dir_id] = (prefix, number)
         else:
             dir_code[dir_id] = None
@@ -201,7 +208,7 @@ def attribute(conn, code_re, prefer, root):
                 found = parse_code(name, code_re)
                 if found:
                     prefix, number, w = found
-                    widths[prefix] = max(widths[prefix], w)
+                    widths[prefix][w] += 1
                     fname = (prefix, number)
             if fname and folder and fname != folder:
                 code = fname if prefer == "filename" else folder
@@ -216,6 +223,43 @@ def attribute(conn, code_re, prefer, root):
             yield fid, did, name, ext, size, code, source, conflict
 
     return dir_code, dir_paths, rows, widths
+
+
+def resolve_widths(counts):
+    """prefix -> the digit width to display, given every width seen for it.
+
+    The most common one, not the widest. A handful of odd names cannot then
+    repad thousands of real codes, and nothing is lost when they are genuine:
+    fmt() pads to this width but never truncates, so a longer number than
+    expected still prints in full.
+    """
+    return {prefix: max(seen.items(), key=lambda kv: (kv[1], kv[0]))[0]
+            for prefix, seen in counts.items()}
+
+
+def apply_pad(widths, spec):
+    """Override the learned padding width.
+
+    Widths are otherwise the widest digit run the pattern matched for that
+    prefix, so a single name like "AA 20240115 rescan" pads all 1,400 real
+    codes to 5 digits. This is the escape hatch when that happens.
+    """
+    if not spec:
+        return
+    for part in spec.split(","):
+        part = part.strip()
+        if not part:
+            continue
+        if "=" in part:
+            prefix, _, value = part.partition("=")
+            prefix = prefix.strip().upper()
+            if prefix not in widths:
+                print(f"note: --pad names prefix {prefix}, which was not found",
+                      file=sys.stderr)
+            widths[prefix] = int(value)
+        else:
+            for prefix in list(widths):
+                widths[prefix] = int(part)
 
 
 def fmt(code, widths):
@@ -304,6 +348,9 @@ def build(args):
     flush(conn, pending)
     if csv_fh:
         csv_fh.close()
+
+    widths = resolve_widths(widths)
+    apply_pad(widths, args.pad)
 
     # Padding is only known now that everything has been seen, so fill the
     # display column in one statement per prefix.
@@ -589,6 +636,7 @@ def main():
     ap.add_argument("--prefixes", default=None)
     ap.add_argument("--code-regex", default=None)
     ap.add_argument("--date-order", default="dmy", choices=["dmy", "mdy"])
+    ap.add_argument("--pad", default=None)
     ap.add_argument("--prefer", default="filename", choices=["filename", "folder"])
     ap.add_argument("--csv", default=None)
     args = ap.parse_args()
