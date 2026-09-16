@@ -260,6 +260,28 @@ Identities are cached in a `dicom_uid` table, so the expensive part runs once.
 total - blank until this has been run, rather than zero, since a zero would
 answer the question wrongly.
 
+### Two files look identical but the count does not move
+
+```bash
+python find_duplicates.py --db inventory.db --explain 5 8
+```
+
+It prints both files and then the reason, which is one of four:
+
+* **no cached identity** - `find_duplicates.py` has not been run yet, so there
+  is nothing to count. This is the usual answer.
+* **not DICOM** - only files `probe.py` identified as DICOM are compared.
+* **different images** - the `SOPInstanceUID`s differ, so they are not copies
+  however alike they look.
+* **same image, different patient codes** - counted as a *cross-patient*
+  duplicate and deliberately kept out of either patient's column. That column
+  counts redundant copies within one patient; this pair is a filing error
+  instead, and one of the two codes is wrong.
+
+The last one is easy to hit when a code appears at more than one level of a
+path - the **nearest** ancestor folder carrying a code wins, so
+`/archive/AA0976/QQQ0012 mixed/IM001` is attributed to QQQ0012, not AA0976.
+
 ## `compare_headers.py`: what differs between two files
 
 `find_duplicates.py` says two files are the same image. This says how they

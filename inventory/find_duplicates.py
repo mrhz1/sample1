@@ -26,6 +26,9 @@ Usage:
     --out PATH    Also write the duplicate groups to Excel.
     --rebuild     Recompute the cached identities from scratch.
     --limit N     Groups to write to Excel (default 5000, newest first).
+    --explain A B Say why one pair of file_ids is, or is not, counted as a
+                  duplicate. Use it when two files look identical but the
+                  per-patient count does not move.
 """
 
 import argparse
@@ -142,12 +145,64 @@ def write_workbook(rows, path):
     wb.save(path)
 
 
+def explain(conn, a_id, b_id):
+    """Why a pair is or is not counted. Every reason it can fail, checked."""
+    # The likeliest reason a pair is not counted is that this table was never
+    # built, so create it empty rather than failing on a missing table - the
+    # verdict below then says exactly that.
+    conn.executescript(SCHEMA)
+    rows = {}
+    for fid in (a_id, b_id):
+        row = conn.execute(
+            "SELECT f.id, f.code, f.kind, u.uid, u.source, d.path || '/' || f.name"
+            "  FROM files f JOIN dirs d ON d.id = f.dir_id"
+            "  LEFT JOIN dicom_uid u ON u.file_id = f.id"
+            " WHERE f.id = ?", (fid,)).fetchone()
+        if row is None:
+            print(f"  file_id {fid} is not in this database")
+            return
+        rows[fid] = row
+    for fid in (a_id, b_id):
+        _, code, kind, uid, source, path = rows[fid]
+        print(f"  file_id {fid}")
+        print(f"    patient code : {code or '(none - unassigned)'}")
+        print(f"    kind         : {kind or '(not probed)'}")
+        print(f"    image id     : {uid or '(none - run without --explain first)'}")
+        print(f"    identified by: {source or '-'}")
+        print(f"    path         : {path}")
+    a, b = rows[a_id], rows[b_id]
+    print("\n  verdict")
+    if a[3] is None or b[3] is None:
+        print("    NOT COUNTED - no cached identity. Run find_duplicates.py")
+        print("    without --explain first; it builds the dicom_uid table.")
+        return
+    if a[2] != "dicom" or b[2] != "dicom":
+        print("    NOT COUNTED - only files probe.py identified as DICOM are")
+        print(f"    compared, and these are {a[2]!r} and {b[2]!r}.")
+        return
+    if a[3] != b[3]:
+        print("    NOT COUNTED - different images. The two headers carry")
+        print("    different SOPInstanceUIDs, so these are not copies.")
+        return
+    if a[1] != b[1]:
+        print("    SAME IMAGE, but filed under two DIFFERENT patient codes:")
+        print(f"        {a[1] or '(unassigned)'}   vs   {b[1] or '(unassigned)'}")
+        print("    Counted as a cross-patient duplicate, NOT in either")
+        print("    patient's 'Duplicate DICOM Images' - that column counts")
+        print("    redundant copies within one patient, and this pair is a")
+        print("    filing error instead: one of the two codes is wrong.")
+        print("    Look at the two paths above and see which folder misleads.")
+        return
+    print(f"    COUNTED - same image, same patient ({a[1]}). One is redundant.")
+
+
 def main():
     ap = argparse.ArgumentParser(description=__doc__.split("\n")[0])
     ap.add_argument("--db", default="inventory.db")
     ap.add_argument("--out", default=None)
     ap.add_argument("--rebuild", action="store_true")
     ap.add_argument("--limit", type=int, default=5000)
+    ap.add_argument("--explain", nargs=2, type=int, metavar=("A", "B"))
     args = ap.parse_args()
 
     if not os.path.exists(args.db):
@@ -157,6 +212,11 @@ def main():
         "SELECT name FROM sqlite_master WHERE type = 'table'")}
     if "dicom_meta" not in have:
         sys.exit("no dicom_meta table - run probe.py first")
+
+    if args.explain:
+        explain(conn, *args.explain)
+        conn.close()
+        return
 
     sources = build_identities(conn, args.rebuild)
     total, unique, per_patient, cross = summarise(conn)
