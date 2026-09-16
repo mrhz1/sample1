@@ -258,6 +258,23 @@ def unassigned_rows(unassigned):
     ]
 
 
+def attribution_banner(conn):
+    """When the codes in this database were written, and by what command.
+
+    Printed because these tools display report.py's attribution rather than
+    deriving their own - so a stale database looks exactly like a bug in the
+    tool that reads it.
+    """
+    meta = dict(conn.execute(
+        "SELECT key, value FROM meta WHERE key IN"
+        " ('report_run_at', 'report_args')"))
+    when = meta.get("report_run_at")
+    if not when:
+        return ("codes were written by a report.py run older than this stamp -"
+                " re-run it if anything below looks stale")
+    return f"codes written by report.py at {when}  ({meta.get('report_args', '')})"
+
+
 def main():
     ap = argparse.ArgumentParser(description=__doc__.split("\n")[0])
     ap.add_argument("--db", default="inventory.db")
@@ -283,6 +300,7 @@ def main():
             "SELECT 1 FROM files WHERE code IS NOT NULL LIMIT 1").fetchone():
         sys.exit("no codes assigned - run report.py --prefixes ... first")
 
+    banner = attribution_banner(conn)
     dirs = load_dirs(conn)
     reports, orphan_reports = collect_reports(conn, dirs, args.date_order)
     studies, unassigned = collect_studies(conn, dirs)
@@ -368,6 +386,7 @@ def main():
         cov_totals[coverage.ORPHAN] += r[7]
 
     print(f"wrote {out_path}  ({len(combined):,} rows)")
+    print(f"  {banner}")
     if not args.no_per_code:
         print(f"  per-code workbooks: {n_files:,} in {results_dir}")
     print(f"  codes: {len(codes):,}   "

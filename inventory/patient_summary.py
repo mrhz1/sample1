@@ -187,6 +187,23 @@ def sheet(wb, title, header, widths, data, freeze=True):
     return ws
 
 
+def attribution_banner(conn):
+    """When the codes in this database were written, and by what command.
+
+    Printed because these tools display report.py's attribution rather than
+    deriving their own - so a stale database looks exactly like a bug in the
+    tool that reads it.
+    """
+    meta = dict(conn.execute(
+        "SELECT key, value FROM meta WHERE key IN"
+        " ('report_run_at', 'report_args')"))
+    when = meta.get("report_run_at")
+    if not when:
+        return ("codes were written by a report.py run older than this stamp -"
+                " re-run it if anything below looks stale")
+    return f"codes written by report.py at {when}  ({meta.get('report_args', '')})"
+
+
 def main():
     ap = argparse.ArgumentParser(description=__doc__.split("\n")[0])
     ap.add_argument("--db", default="inventory.db")
@@ -203,6 +220,7 @@ def main():
         sys.exit("no study_report table - run report.py --prefixes ... first")
 
     root = conn.execute("SELECT value FROM meta WHERE key='root'").fetchone()[0]
+    banner = attribution_banner(conn)
     rows = collect(conn)
     if args.prefix:
         wanted = {p.strip().upper() for p in args.prefix.split(",") if p.strip()}
@@ -228,6 +246,7 @@ def main():
     wb.save(args.out)
 
     print(f"wrote {args.out}")
+    print(f"  {banner}")
     print(f"  {len(data):,} patients")
     print(f"  {sum(r[3] for r in data):,} DICOMs have a report, "
           f"{sum(r[4] for r in data):,} do not")

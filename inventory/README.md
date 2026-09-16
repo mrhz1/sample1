@@ -333,15 +333,39 @@ read it, and you pass the real ones to `--prefixes`.
 python diagnose_codes.py --db inventory.db --prefixes AA
 ```
 
-**A name like `AA1234AA` invented a patient.** A code is a prefix, a digit run,
-and then something that is not a letter or a digit. The guard on the end of the
-pattern enforces all of that, so `AA1234AA` matches nothing rather than
-yielding `AA1234`, and `AA 20240115 rescan` matches nothing rather than
-inventing `AA20240`. Legitimate names are untouched: `AA0001 follow up`,
-`AA0001.pdf` and `AA0001-results.xlsx` all still resolve to `AA0001`.
+**A name like `EEAA6079` or `AA1234AA` invented a patient.** `--prefixes AA`
+means the code *is* `AA` plus digits, not a fragment of a longer token, so the
+pattern is guarded at both ends: a prefix that starts the token, a digit run,
+then something that is neither a letter nor a digit.
+
+```
+EEAA6079             no match      AA1234AA            no match
+XAA0001              no match      AA 20240115 rescan  no match
+2024AA0001           no match      AA123456789         no match
+
+AA0001               AA0001        _AA0001             AA0001
+AA0001 follow up     AA0001        scan-AA0001         AA0001
+AA0001.pdf           AA0001        AVDD1400            AVDD1400
+```
+
+Separators are not letters or digits, so `_AA0001` and `scan-AA0001` still
+resolve - only a name running letters or digits straight into the code is
+rejected. A file named `EEAA6079` inside `AA6554 base` now takes `AA6554` from
+its folder with `code_source = folder`, instead of inventing `AA6079` and
+raising a filename/folder conflict against its own patient.
 
 If your codes are always a fixed width, `--digits 4` says so outright and
 refuses anything else; `--digits 3-5` takes a range. The default is 1-5.
+
+**Every later tool displays these codes rather than deriving its own**, so
+after changing a matching rule, `report.py` has to be re-run before
+`patient_summary.py` or `match_report_from_db.py` will show the difference -
+until then they faithfully print the previous run's attribution. Both now open
+with the stamp of the run that wrote what they are showing:
+
+```
+codes written by report.py at 2026-09-16 14:27:02  (--prefixes AA --digits 4)
+```
 
 **Codes padded too wide** (`AA0001` coming out as `AA000001`) was a bug, fixed
 in two places. A folder called `AA 20240115 rescan` used to match as `AA20240`:

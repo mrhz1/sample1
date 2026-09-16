@@ -178,15 +178,19 @@ def build_code_re(prefixes, override, digits=None):
         sys.exit("give --prefixes (run --discover first) or --code-regex")
     alt = "|".join(re.escape(p.strip()) for p in prefixes.split(",") if p.strip())
     lo, hi = parse_digits(digits)
-    # The trailing guard carries most of the weight. A code is a prefix, a
-    # digit run, and then something that is not a letter or a digit:
-    #   AA 20240115 rescan -> no match (the run is longer than a code)
+    # --prefixes AA means the code IS "AA" plus digits - not a fragment of a
+    # longer token. Both ends are guarded, so a code is a prefix that starts
+    # the token, a digit run, and then something that is not a letter or digit:
+    #   EEAA6079           -> no match (letters before the prefix)
     #   AA1234AA           -> no match (letters after the digits)
+    #   AA 20240115 rescan -> no match (the run is longer than a code)
     #   AA0001 follow up   -> AA0001
-    # Without it the first invents a patient whose long number repads every
-    # real code, and the second invents one out of a filename fragment.
-    return re.compile(rf"(?:{alt})[-_ ]?\d{{{lo},{hi}}}(?![A-Za-z0-9])",
-                      re.IGNORECASE)
+    # Separators are not letters or digits, so _AA0001 and scan-AA0001 still
+    # resolve; only a name that runs letters or digits straight into the code
+    # is rejected, and that is not this archive's code.
+    return re.compile(
+        rf"(?<![A-Za-z0-9])(?:{alt})[-_ ]?\d{{{lo},{hi}}}(?![A-Za-z0-9])",
+        re.IGNORECASE)
 
 
 def pattern_hints(pattern):
@@ -409,6 +413,13 @@ def build(args):
         [(fmt(c, widths) or None, d) for d, c in dir_code.items()])
     conn.execute(INDEX)
     conn.executescript(VIEW)
+    # Stamp the run. Every later tool reads these codes rather than deriving
+    # them, so "which report.py produced this?" is the first question when a
+    # number looks wrong - and the answer is otherwise unknowable.
+    conn.executemany(
+        "INSERT OR REPLACE INTO meta(key, value) VALUES (?, ?)",
+        [("report_run_at", time.strftime("%Y-%m-%d %H:%M:%S")),
+         ("report_args", " ".join(sys.argv[1:]))])
     conn.commit()
 
     studies = match_studies(conn, dir_code, dir_paths, reports, args)
