@@ -260,6 +260,56 @@ Identities are cached in a `dicom_uid` table, so the expensive part runs once.
 total - blank until this has been run, rather than zero, since a zero would
 answer the question wrongly.
 
+## `compare_headers.py`: what differs between two files
+
+`find_duplicates.py` says two files are the same image. This says how they
+differ - useful when they are the same image but not the same file, and when
+you want to see for yourself rather than take the UID's word for it.
+
+```bash
+python compare_headers.py --db inventory.db 3 1
+```
+
+```
+A  file_id 3      682 bytes  /nas/AA0001 base/IM00001
+B  file_id 1      704 bytes  /nas/AA0001 base/IM00001_edited
+
+DIFFERENT VALUES (1)
+  00080080  Institution Name
+      A: General Hospital
+      B: General Hospital NHS Trust
+
+PRESENT ONLY IN B (1)
+  00081010  Station Name
+      B: US-3
+
+==============================================================================
+SAME IMAGE - identical SOPInstanceUID. One of these is a copy.
+  Note: the files differ in size (682 vs 704 bytes) - same image, re-encoded
+  or with tags added.
+  8 tags identical, 1 different, 1 present on one side only
+```
+
+Only the differences are printed - a header is hundreds of tags and copies
+agree on nearly all of them, so listing everything buries the answer. `--all`
+adds the identical ones when you want the full picture.
+
+The verdict at the bottom is the point: **same image**, **different images**,
+or **cannot tell** when a header carries no `SOPInstanceUID`. Tags that decide
+identity are annotated inline, so a difference in `SOPInstanceUID` is never
+read as just another field.
+
+It reads stored headers, so the archive does not need to be reachable. To find
+two ids to compare - every copy of one image, with its `file_id`:
+
+```sql
+SELECT u.uid, f.id, d.path || '/' || f.name
+  FROM dicom_uid u JOIN files f ON f.id = u.file_id
+  JOIN dirs d ON d.id = f.dir_id
+ WHERE u.uid IN (SELECT uid FROM dicom_uid GROUP BY uid HAVING COUNT(*) > 1)
+ ORDER BY u.uid;
+```
+
 ## `patient_summary.py`: one line per patient
 
 A second, smaller workbook for the question "what exactly does AA0001 have?" -
