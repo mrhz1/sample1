@@ -480,6 +480,23 @@ raising a filename/folder conflict against its own patient.
 If your codes are always a fixed width, `--digits 4` says so outright and
 refuses anything else; `--digits 3-5` takes a range. The default is 1-5.
 
+**`--digits` is a filter, not a formatter.** `--digits 4` does not pad `AA976`
+to `AA0976` - it rejects it, along with `AA003` and `AA12`, and those patients
+vanish from every output. Only set it if you are certain the archive has no
+short codes; `--pad 4` is what makes them *display* four wide. Section 5 of
+`diagnose_codes.py` counts what a rule rejects:
+
+```
+5. NAMES THIS PATTERN REJECTS
+          1  a letter or digit follows the number
+             folder: AA0980base
+          1  3 digits, outside --digits 4
+             folder: AA976 old three digit
+```
+
+Run that before trusting a tightened rule. Each line is a patient you no longer
+have.
+
 **Every later tool displays these codes rather than deriving its own**, so
 after changing a matching rule, `report.py` has to be re-run before
 `patient_summary.py` or `match_report_from_db.py` will show the difference -

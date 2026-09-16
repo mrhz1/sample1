@@ -200,6 +200,58 @@ def section_discover(conn, hints, examples):
               "\n  not bounded, still matches thousands of files.")
 
 
+def section_rejected(conn, code_re, prefixes, digits, hints, examples):
+    """Names a looser pattern would accept but this one rejects, by reason.
+
+    Tightening a rule is invisible until something disappears, and by then the
+    patient count has moved and nobody knows which rule took them. This puts a
+    number against each guard before you trust the run.
+    """
+    head("5. NAMES THIS PATTERN REJECTS")
+    loose = build_code_re(prefixes, None, "1-9")
+    loose = re.compile(loose.pattern.replace("(?<![A-Za-z0-9])", "")
+                       .replace("(?![A-Za-z0-9])", ""), re.IGNORECASE)
+    lo, hi = None, None
+    try:
+        from report import parse_digits
+        lo, hi = parse_digits(digits)
+    except Exception:
+        lo, hi = 1, 5
+
+    reasons = defaultdict(list)
+    counts = Counter()
+    for kind, name in iter_names(conn, hints):
+        if parse_code(name, code_re):
+            continue
+        m = loose.search(name)
+        if not m:
+            continue
+        start, end = m.span()
+        run = re.search(r"\d+$", m.group(0))
+        width = len(run.group(0)) if run else 0
+        if start > 0 and name[start - 1].isalnum():
+            why = "a letter or digit runs into the prefix"
+        elif end < len(name) and name[end].isalnum():
+            why = "a letter or digit follows the number"
+        elif not (lo <= width <= hi):
+            why = f"{width} digits, outside --digits {digits or '1-5'}"
+        else:
+            why = "other"
+        counts[why] += 1
+        if len(reasons[why]) < examples:
+            reasons[why].append(f"{kind}: {name}")
+
+    if not counts:
+        print("  nothing is rejected - every code-like name is being attributed.")
+        return
+    print("  These would be codes under a looser rule. Each line is a patient")
+    print("  you do NOT have, so check the examples before accepting them.\n")
+    for why, n in counts.most_common():
+        print(f"  {n:>9,}  {why}")
+        for ex in reasons[why]:
+            print(f"             {ex[:64]}")
+
+
 def main():
     ap = argparse.ArgumentParser(description=__doc__.split("\n")[0])
     ap.add_argument("--db", default="inventory.db")
@@ -225,6 +277,7 @@ def main():
 
     section_padding(conn, code_re, hints, args.examples)
     section_discover(conn, hints, args.examples)
+    section_rejected(conn, code_re, prefixes, args.digits, hints, args.examples)
     print()
 
 
