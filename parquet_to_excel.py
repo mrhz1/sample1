@@ -35,6 +35,14 @@ Options:
     --limit N         Only the first N rows.
     --sheet-per-chunk Excel caps at 1,048,575 data rows. By default a bigger
                       table is refused; this splits it across sheets instead.
+    --datetime-as-text
+                      Write timestamps as text rather than as dates. A date in
+                      xlsx is always stored as a number plus a display format -
+                      that is the file format, not a defect - and some
+                      lightweight viewers ignore the format and show the raw
+                      44174.59. Text shows correctly everywhere, at the cost of
+                      date arithmetic, date sorting and filtering in Excel
+                      itself. Prefer --csv if the file is only to be read.
 """
 
 import argparse
@@ -103,7 +111,15 @@ def write_csv(df, out, fmt):
     df.to_csv(out, index=False, date_format=fmt)
 
 
-def write_excel(df, out, sheet, fmt, split):
+def as_text(df, columns, fmt):
+    """Render timestamps to strings using the CSV-style strftime pattern."""
+    pattern = fmt if "%" in fmt else DEFAULT_CSV_FORMAT
+    for col in columns:
+        df[col] = df[col].dt.strftime(pattern).where(df[col].notna(), None)
+    return pattern
+
+
+def write_excel(df, out, sheet, fmt, split, text_dates=False):
     from openpyxl.utils import get_column_letter
 
     rows = len(df)
@@ -113,7 +129,7 @@ def write_excel(df, out, sheet, fmt, split):
                  "  --csv writes it in one piece, or --sheet-per-chunk splits "
                  "it across sheets.")
 
-    stamps = timestamp_columns(df)
+    stamps = [] if text_dates else timestamp_columns(df)
     with pd.ExcelWriter(out, engine="openpyxl", datetime_format=fmt) as writer:
         chunks = [(sheet, df)] if rows <= per_sheet else [
             (f"{sheet}_{i + 1}", df.iloc[i * per_sheet:(i + 1) * per_sheet])
@@ -147,6 +163,7 @@ def main():
     ap.add_argument("--columns", default=None)
     ap.add_argument("--limit", type=int, default=None)
     ap.add_argument("--sheet-per-chunk", action="store_true")
+    ap.add_argument("--datetime-as-text", action="store_true")
     args = ap.parse_args()
 
     if not os.path.exists(args.parquet):
@@ -166,22 +183,28 @@ def main():
     precise = [c for c in stamps if uses_microseconds(df[c])]
     converted = strip_timezone(df, stamps, args.tz)
 
+    text_pattern = None
+    if args.datetime_as_text and not args.csv:
+        text_pattern = as_text(df, stamps, args.datetime_format or "")
+
     if args.csv:
         write_csv(df, out, fmt)
         sheets = 0
     else:
-        sheets = write_excel(df, out, args.sheet, fmt, args.sheet_per_chunk)
+        sheets = write_excel(df, out, args.sheet, fmt, args.sheet_per_chunk,
+                             args.datetime_as_text)
 
     print(f"wrote {out}")
     print(f"  {len(df):,} rows x {len(df.columns)} columns"
           + (f" across {sheets} sheets" if sheets > 1 else ""))
     if stamps:
         print(f"  timestamp columns: {', '.join(map(str, stamps))}")
-        print(f"  shown as: {fmt}")
+        print(f"  shown as: {text_pattern or fmt}"
+              + ("   (written as text)" if text_pattern else ""))
     for col, tz in converted:
         print(f"  {col}: converted from {tz} and the offset dropped"
               f" ({args.tz})")
-    if precise and not args.csv:
+    if precise and not args.csv and not args.datetime_as_text:
         print(f"  NOTE: {', '.join(map(str, precise))} use microseconds, which"
               " Excel cannot\n        represent - those digits are rounded."
               " Use --csv to keep them exactly.")
