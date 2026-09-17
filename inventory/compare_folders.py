@@ -34,13 +34,25 @@ import sys
 
 
 def normalise(path):
-    return path.replace("\\", "/").rstrip("/")
+    """Windows paths reach this tool in every spelling.
+
+    The database stores whatever the crawl saw - "X:\\A\\B" on Windows - while
+    the same folder gets typed as X:/A/B, with a trailing slash, or in another
+    case. Both sides are folded to lower case with forward slashes so they
+    compare equal; SQLite does the same to the stored column.
+    """
+    return path.replace("\\", "/").rstrip("/").lower()
+
+
+# The stored path, spelled the same way normalise() spells the input.
+DB_PATH = "LOWER(REPLACE(d.path, '\\', '/'))"
 
 
 def files_under(conn, path, code, flat):
     """{identity -> [file names]} for the DICOM files under one folder."""
     path = normalise(path)
-    where = "d.path = ?" if flat else "(d.path = ? OR d.path LIKE ? || '/%')"
+    where = (f"{DB_PATH} = ?" if flat
+             else f"({DB_PATH} = ? OR {DB_PATH} LIKE ? || '/%')")
     params = [path] if flat else [path, path]
     if code:
         where += " AND f.code = ?"
@@ -57,6 +69,40 @@ def files_under(conn, path, code, flat):
             continue
         found.setdefault(uid, []).append(name)
     return found, unknown, len(rows)
+
+
+def suggest(db, path, code):
+    """Show what the database does hold, so a path can be corrected by eye."""
+    conn = sqlite3.connect(f"file:{os.path.abspath(db)}?mode=ro", uri=True)
+    leaf = normalise(path).rsplit("/", 1)[-1]
+    rows = conn.execute(
+        f"""SELECT d.path, COUNT(*) FROM files f JOIN dirs d ON d.id = f.dir_id
+             WHERE f.kind = 'dicom' AND {DB_PATH} LIKE '%' || ? || '%'
+             GROUP BY d.path ORDER BY COUNT(*) DESC LIMIT 5""",
+        (leaf,)).fetchall()
+    if rows:
+        print(f"\n  folders whose name contains {leaf!r}:", file=sys.stderr)
+        for p, n in rows:
+            print(f"    {n:>8,} DICOM   {p}", file=sys.stderr)
+    elif code:
+        rows = conn.execute(
+            """SELECT d.path, COUNT(*) FROM files f JOIN dirs d ON d.id = f.dir_id
+                WHERE f.code = ? AND f.kind = 'dicom'
+                GROUP BY d.path ORDER BY COUNT(*) DESC LIMIT 5""",
+            (code,)).fetchall()
+        if rows:
+            print(f"\n  folders holding {code}:", file=sys.stderr)
+            for p, n in rows:
+                print(f"    {n:>8,} DICOM   {p}", file=sys.stderr)
+    else:
+        rows = conn.execute(
+            """SELECT d.path FROM files f JOIN dirs d ON d.id = f.dir_id
+                WHERE f.kind = 'dicom' GROUP BY d.path LIMIT 3""").fetchall()
+        if rows:
+            print("\n  paths are stored like this:", file=sys.stderr)
+            for (p,) in rows:
+                print(f"    {p}", file=sys.stderr)
+    conn.close()
 
 
 def main():
@@ -81,11 +127,13 @@ def main():
     b, b_unknown, b_files = files_under(conn, args.path2, args.code, args.flat)
     conn.close()
 
-    if not a_files:
-        sys.exit(f"no DICOM files found under path1 - check the path is exactly"
-                 f" as the database stores it, and the --code:\n  {args.path1}")
-    if not b_files:
-        sys.exit(f"no DICOM files found under path2:\n  {args.path2}")
+    for label, path, n in (("path1", args.path1, a_files),
+                           ("path2", args.path2, b_files)):
+        if n:
+            continue
+        print(f"no DICOM files found under {label}:\n  {path}", file=sys.stderr)
+        suggest(args.db, path, args.code)
+        sys.exit(1)
 
     shared = set(a) & set(b)
     # One image can sit in a folder more than once, so count files, not images.

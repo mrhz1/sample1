@@ -354,6 +354,19 @@ Subfolders are included unless `--flat` is passed, `--code` narrows to one
 patient, and `--list 5` prints example file names. Needs `find_duplicates.py`
 to have been run once, and says so if it has not.
 
+Paths are matched however they are spelled - `X:\A\B`, `X:/A/B`, a trailing
+slash, or a different case all find the same folder, whichever way the crawl
+stored it. When a path matches nothing, the error shows the folders that do
+exist so it can be corrected by eye:
+
+```
+no DICOM files found under path1:
+  X:\Studies\AA0001 base
+
+  folders whose name contains 'aa0001 base':
+           3 DICOM   X:\Studies\ex\AA0001 base
+```
+
 ## `compare_headers.py`: what differs between two files
 
 `find_duplicates.py` says two files are the same image. This says how they
