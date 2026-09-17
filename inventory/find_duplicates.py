@@ -43,6 +43,9 @@ Usage:
                   to the same patient. Without it a copy filed under another
                   code still counts toward the archive total, and is reported
                   separately as a filing error.
+    --patient C   Print one patient's numbers folder by folder and stop. Use
+                  this to reconcile against an older count: it shows which
+                  folder holds the originals and which adds nothing new.
     --explain A B Say why one pair of file_ids is, or is not, counted as a
                   duplicate. Use it when two files look identical but the
                   per-patient count does not move.
@@ -224,6 +227,61 @@ def write_workbook(rows, path):
     wb.save(path)
 
 
+def patient(conn, code):
+    """One patient, folder by folder, with what each folder adds.
+
+    A total on its own cannot be argued with. This shows where the files are
+    and how many images each folder contributes that no earlier folder had,
+    which is what reconciles a count taken over two folders against a count
+    taken over the whole archive.
+    """
+    rows = conn.execute("""
+        SELECT d.path, COUNT(*), COUNT(DISTINCT u.uid)
+          FROM files f JOIN dirs d ON d.id = f.dir_id
+          LEFT JOIN dicom_uid u ON u.file_id = f.id
+         WHERE f.code = ? AND f.kind = 'dicom'
+         GROUP BY d.path ORDER BY COUNT(*) DESC""", (code,)).fetchall()
+    if not rows:
+        print(f"  no DICOM files attributed to {code}")
+        near = [r[0] for r in conn.execute(
+            "SELECT DISTINCT code FROM files WHERE code LIKE ? LIMIT 5",
+            (code[:2] + "%",))]
+        if near:
+            print(f"  codes that do exist: {', '.join(near)}")
+        return
+
+    total, distinct = conn.execute("""
+        SELECT COUNT(*), COUNT(DISTINCT u.uid)
+          FROM files f LEFT JOIN dicom_uid u ON u.file_id = f.id
+         WHERE f.code = ? AND f.kind = 'dicom'""", (code,)).fetchone()
+    sources = dict(conn.execute("""
+        SELECT u.source, COUNT(*) FROM dicom_uid u JOIN files f ON f.id = u.file_id
+         WHERE f.code = ? GROUP BY u.source""", (code,)))
+
+    print(f"  {code}")
+    print(f"    DICOM files          {total:>10,}")
+    print(f"    distinct images      {distinct:>10,}")
+    print(f"    redundant copies     {total - distinct:>10,}")
+    for src, n in sorted(sources.items()):
+        print(f"    identified by {src:<8} {n:>10,}")
+
+    print(f"\n    {'FILES':>9} {'DISTINCT':>9} {'NEW HERE':>9}  FOLDER")
+    print("    " + "-" * 70)
+    seen = set()
+    for path, n_files, n_distinct in rows:
+        uids = {r[0] for r in conn.execute("""
+            SELECT DISTINCT u.uid FROM files f JOIN dirs d ON d.id = f.dir_id
+              JOIN dicom_uid u ON u.file_id = f.id
+             WHERE f.code = ? AND f.kind = 'dicom' AND d.path = ?""",
+            (code, path))}
+        new = len(uids - seen)
+        seen |= uids
+        print(f"    {n_files:>9,} {n_distinct:>9,} {new:>9,}  {path[-58:]}")
+    print("\n    NEW HERE is images this folder adds that no folder above")
+    print("    it had. A folder adding 0 is entirely a copy of earlier ones.")
+    print(f"    That column totals {len(seen):,} - the distinct image count.")
+
+
 def explain(conn, a_id, b_id):
     """Why a pair is or is not counted. Every reason it can fail, checked."""
     # The likeliest reason a pair is not counted is that this table was never
@@ -289,6 +347,7 @@ def main():
     ap.add_argument("--explain", nargs=2, type=int, metavar=("A", "B"))
     ap.add_argument("--match", default="image", choices=["image", "exact"])
     ap.add_argument("--same-code", action="store_true")
+    ap.add_argument("--patient", default=None)
     args = ap.parse_args()
 
     if not os.path.exists(args.db):
@@ -298,6 +357,12 @@ def main():
         "SELECT name FROM sqlite_master WHERE type = 'table'")}
     if "dicom_meta" not in have:
         sys.exit("no dicom_meta table - run probe.py first")
+
+    if args.patient:
+        conn.executescript(SCHEMA)
+        patient(conn, args.patient)
+        conn.close()
+        return
 
     if args.explain:
         explain(conn, *args.explain)
