@@ -10,10 +10,15 @@ generated once by the scanner, mandatory in every conformant file, and
 preserved by a copy. Comparing bytes would be equally certain and would mean
 re-reading a terabyte; this reads the database instead.
 
-Where a header has no SOPInstanceUID - non-conformant or anonymised writers -
-it falls back to file name plus exact byte size, which is good evidence but not
-proof. Every count is reported split by which method produced it, so a fallback
-number is never mistaken for a certain one.
+Where a header has no SOPInstanceUID - some anonymisers strip it - the fallback
+is SeriesInstanceUID plus InstanceNumber, which is unique within a series for
+the same reason. A file with neither is given an identity unique to itself and
+so is never claimed as a copy of anything; the count of those is reported, so
+"no duplicates" is never confused with "could not tell".
+
+File name and size are deliberately NOT used. Slice names repeat across studies
+(every series has an IM00001) and slices of one modality are often identical in
+size, so that rule merges unrelated images and undercounts the archive.
 
 Results are cached in a `dicom_uid` table so patient_summary.py can show the
 per-patient column without redoing the work.
@@ -40,8 +45,9 @@ import time
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS dicom_uid (
     file_id INTEGER PRIMARY KEY,
-    uid     TEXT NOT NULL,   -- SOPInstanceUID, or 'name|size' when absent
-    source  TEXT NOT NULL    -- 'sop' | 'name+size'
+    uid     TEXT NOT NULL,   -- SOPInstanceUID, or a series+instance key, or
+                             -- 'file:<id>' when the header identifies nothing
+    source  TEXT NOT NULL    -- 'sop' | 'series+instance' | 'none'
 );
 CREATE INDEX IF NOT EXISTS dicom_uid_uid ON dicom_uid(uid);
 """
@@ -61,13 +67,31 @@ def build_identities(conn, rebuild):
         started = time.time()
         # json_extract over millions of headers is the slow part, so it runs
         # once and the answer is kept.
+        # 'file:<id>' is unique per row on purpose: a file whose header
+        # identifies nothing can then never collide with another, so it is
+        # counted as its own image rather than silently merged into one.
         conn.execute("""
             INSERT OR REPLACE INTO dicom_uid(file_id, uid, source)
             SELECT f.id,
-                   COALESCE(json_extract(m.json, '$."00080018".Value[0]'),
-                            f.name || '|' || COALESCE(f.size, -1)),
-                   CASE WHEN json_extract(m.json, '$."00080018".Value[0]')
-                        IS NOT NULL THEN 'sop' ELSE 'name+size' END
+                   CASE
+                     WHEN json_extract(m.json, '$."00080018".Value[0]') IS NOT NULL
+                       THEN json_extract(m.json, '$."00080018".Value[0]')
+                     WHEN json_extract(m.json, '$."0020000E".Value[0]') IS NOT NULL
+                      AND json_extract(m.json, '$."00200013".Value[0]') IS NOT NULL
+                       THEN 'series:'
+                            || json_extract(m.json, '$."0020000E".Value[0]')
+                            || '#'
+                            || json_extract(m.json, '$."00200013".Value[0]')
+                     ELSE 'file:' || f.id
+                   END,
+                   CASE
+                     WHEN json_extract(m.json, '$."00080018".Value[0]') IS NOT NULL
+                       THEN 'sop'
+                     WHEN json_extract(m.json, '$."0020000E".Value[0]') IS NOT NULL
+                      AND json_extract(m.json, '$."00200013".Value[0]') IS NOT NULL
+                       THEN 'series+instance'
+                     ELSE 'none'
+                   END
               FROM files f
               LEFT JOIN dicom_meta m ON m.file_id = f.id
              WHERE f.kind = 'dicom'
@@ -136,7 +160,9 @@ def write_workbook(rows, path):
         cell.font = Font(bold=True)
     for uid, copies, patients, codes, source, files in rows:
         ws.append([uid, copies, patients, codes,
-                   "SOPInstanceUID" if source == "sop" else "file name + size",
+                   {"sop": "SOPInstanceUID",
+                    "series+instance": "series + instance number"}.get(
+                        source, "not identifiable"),
                    files])
     for letter, width in zip("ABCDEF", (46, 8, 9, 22, 18, 120)):
         ws.column_dimensions[letter].width = width
@@ -180,9 +206,14 @@ def explain(conn, a_id, b_id):
         print("    NOT COUNTED - only files probe.py identified as DICOM are")
         print(f"    compared, and these are {a[2]!r} and {b[2]!r}.")
         return
+    if "none" in (a[4], b[4]):
+        print("    NOT COUNTED - at least one header identifies nothing: no")
+        print("    SOPInstanceUID and no series + instance number. Such a file")
+        print("    is counted as its own image rather than guessed at.")
+        return
     if a[3] != b[3]:
         print("    NOT COUNTED - different images. The two headers carry")
-        print("    different SOPInstanceUIDs, so these are not copies.")
+        print("    different identifiers, so these are not copies.")
         return
     if a[1] != b[1]:
         print("    SAME IMAGE, but filed under two DIFFERENT patient codes:")
@@ -227,10 +258,16 @@ def main():
     print(f"  {redundant:,} redundant copies "
           f"({100.0 * redundant / total:.1f}% of the files)"
           if total else "  nothing to compare")
-    print(f"\n  identified by SOPInstanceUID: {sources.get('sop', 0):,}")
-    if sources.get("name+size"):
-        print(f"  identified by file name + size: {sources['name+size']:,}"
-              "  <- evidence, not proof")
+    print(f"\n  identified by SOPInstanceUID:        {sources.get('sop', 0):,}")
+    if sources.get("series+instance"):
+        print(f"  identified by series + instance no: "
+              f"{sources['series+instance']:,}")
+    if sources.get("none"):
+        print(f"  NOT identifiable from the header:   {sources['none']:,}")
+        print("    counted as distinct images - they cannot be checked, which"
+              " is not the\n    same as having no duplicates. Re-probe with"
+              " --metadata all if these\n    files were probed with"
+              " --metadata sample or none.")
     if cross:
         print(f"\n  {cross:,} image(s) filed under MORE THAN ONE patient - a"
               " filing error, not waste")

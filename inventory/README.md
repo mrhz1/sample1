@@ -247,9 +247,23 @@ generated once by the scanner, mandatory in a conformant file, and preserved by
 a copy. Comparing bytes would be equally certain and would mean re-reading a
 terabyte.
 
-Where a header carries no `SOPInstanceUID`, it falls back to file name plus
-exact byte size. That is good evidence, not proof, so the output always says
-which method produced which count and never blends them.
+Where a header carries no `SOPInstanceUID` - some anonymisers strip it - the
+fallback is `SeriesInstanceUID` + `InstanceNumber`, unique within a series for
+the same reason. A file with neither is given an identity unique to itself, so
+it is never claimed as a copy of anything, and the count of those is reported:
+**"could not tell" must not read as "no duplicates"**.
+
+File name and size are deliberately **not** used. Every series has an
+`IM00001`, and slices of one modality are often identical in size, so that rule
+merges unrelated images and undercounts the archive badly - on a test of six
+distinct images across two studies it reported three. The output always says
+which method produced which count:
+
+```
+  identified by SOPInstanceUID:        6
+  identified by series + instance no:  6
+  NOT identifiable from the header:    6
+```
 
 An image filed under **two different patient codes** is reported separately. It
 is not wasted space, it is a filing error, and only a person can say which side
