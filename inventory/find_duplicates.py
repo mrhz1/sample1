@@ -31,6 +31,18 @@ Usage:
     --out PATH    Also write the duplicate groups to Excel.
     --rebuild     Recompute the cached identities from scratch.
     --limit N     Groups to write to Excel (default 5000, newest first).
+    --match MODE  How alike two files must be to count as duplicates:
+                    image (default) - the same image, by SOPInstanceUID or
+                      series + instance number. A copy that was re-encoded or
+                      had a tag edited still counts: it is the same picture.
+                    exact - the same image AND the same file name AND the same
+                      byte size AND a byte-identical stored header. Answers
+                      "is one of these safe to delete" rather than "is this
+                      the same image", and will not flag an edited copy.
+    --same-code   Only count two files as duplicates when both are attributed
+                  to the same patient. Without it a copy filed under another
+                  code still counts toward the archive total, and is reported
+                  separately as a filing error.
     --explain A B Say why one pair of file_ids is, or is not, counted as a
                   duplicate. Use it when two files look identical but the
                   per-patient count does not move.
@@ -103,10 +115,51 @@ def build_identities(conn, rebuild):
         "SELECT source, COUNT(*) FROM dicom_uid GROUP BY source"))
 
 
-def summarise(conn):
+def refine_exact(conn):
+    """Split each candidate group by name, size and the stored header.
+
+    Only files that already share an image identity are compared, so this is a
+    short second pass rather than a scan of the archive. Two copies that
+    differ in any of the three stop being duplicates under --match exact.
+    """
+    groups = conn.execute("""
+        SELECT uid FROM dicom_uid GROUP BY uid HAVING COUNT(*) > 1
+    """).fetchall()
+    changed = 0
+    for (uid,) in groups:
+        rows = conn.execute("""
+            SELECT u.file_id, f.name, f.size, COALESCE(m.json, '')
+              FROM dicom_uid u JOIN files f ON f.id = u.file_id
+              LEFT JOIN dicom_meta m ON m.file_id = u.file_id
+             WHERE u.uid = ?""", (uid,)).fetchall()
+        buckets = {}
+        for file_id, name, size, blob in rows:
+            buckets.setdefault((name, size, blob), []).append(file_id)
+        if len(buckets) == 1:
+            continue
+        # The largest bucket keeps the original identity, so the answer does
+        # not depend on the order rows came back in.
+        order = sorted(buckets.values(), key=len, reverse=True)
+        for n, ids in enumerate(order[1:], start=1):
+            conn.executemany("UPDATE dicom_uid SET uid = ? WHERE file_id = ?",
+                             [(f"{uid}#{n}", fid) for fid in ids])
+        changed += 1
+    conn.commit()
+    return changed
+
+
+def summarise(conn, same_code=False):
     """Totals, and the per-patient count of redundant copies."""
-    total, unique = conn.execute(
-        "SELECT COUNT(*), COUNT(DISTINCT uid) FROM dicom_uid").fetchone()
+    if same_code:
+        # Count an image once per patient, so a copy filed under a different
+        # code is not counted as redundant against this one.
+        total, unique = conn.execute("""
+            SELECT COUNT(*), COUNT(DISTINCT f.code || '|' || u.uid)
+              FROM dicom_uid u JOIN files f ON f.id = u.file_id
+             WHERE f.code IS NOT NULL""").fetchone()
+    else:
+        total, unique = conn.execute(
+            "SELECT COUNT(*), COUNT(DISTINCT uid) FROM dicom_uid").fetchone()
 
     # Copies of one image filed under one patient: the extra ones are waste.
     per_patient = dict(conn.execute("""
@@ -234,6 +287,8 @@ def main():
     ap.add_argument("--rebuild", action="store_true")
     ap.add_argument("--limit", type=int, default=5000)
     ap.add_argument("--explain", nargs=2, type=int, metavar=("A", "B"))
+    ap.add_argument("--match", default="image", choices=["image", "exact"])
+    ap.add_argument("--same-code", action="store_true")
     args = ap.parse_args()
 
     if not os.path.exists(args.db):
@@ -249,10 +304,26 @@ def main():
         conn.close()
         return
 
-    sources = build_identities(conn, args.rebuild)
-    total, unique, per_patient, cross = summarise(conn)
+    # The cache holds identities built under one mode; switching modes without
+    # rebuilding would report the previous mode's answer.
+    previous = conn.execute(
+        "SELECT value FROM meta WHERE key = 'duplicate_match'").fetchone()
+    rebuild = args.rebuild or (previous and previous[0] != args.match)
+    if previous and previous[0] != args.match and not args.rebuild:
+        print(f"  --match changed ({previous[0]} -> {args.match}), rebuilding")
+    sources = build_identities(conn, rebuild)
+    if args.match == "exact":
+        split = refine_exact(conn)
+        print(f"  --match exact: {split:,} group(s) split by name, size or"
+              " header - same image, different file")
+    conn.execute("INSERT OR REPLACE INTO meta(key, value) VALUES"
+                 " ('duplicate_match', ?)", (args.match,))
+    conn.commit()
+    total, unique, per_patient, cross = summarise(conn, args.same_code)
     redundant = total - unique
 
+    scope = "same patient only" if args.same_code else "whole archive"
+    print(f"\n  match: {args.match}   scope: {scope}")
     print(f"\n  {total:,} DICOM files")
     print(f"  {unique:,} distinct images")
     print(f"  {redundant:,} redundant copies "

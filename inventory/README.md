@@ -267,7 +267,28 @@ which method produced which count:
 
 An image filed under **two different patient codes** is reported separately. It
 is not wasted space, it is a filing error, and only a person can say which side
-is wrong.
+is wrong. `--same-code` keeps such a pair out of the totals as well.
+
+### How alike must two files be?
+
+| `--match` | counts as a duplicate | answers |
+|---|---|---|
+| `image` (default) | the same image, whatever the file looks like | "how many distinct images do we hold?" |
+| `exact` | same image **and** same file name **and** same byte size **and** a byte-identical stored header | "is one of these safe to delete?" |
+
+The difference is a copy that was re-encoded, anonymised, or had a tag edited.
+It is the same picture, so `image` counts it; the file is not interchangeable
+with the original, so `exact` does not:
+
+```
+--match image   9 files -> 3 distinct, 6 redundant
+--match exact   9 files -> 4 distinct, 5 redundant   (1 group split)
+```
+
+`exact` only compares files that already share an image identity, so it is a
+short second pass rather than another scan. The mode is remembered, and
+changing it rebuilds the cache rather than reporting the previous mode's
+answer.
 
 Identities are cached in a `dicom_uid` table, so the expensive part runs once.
 `patient_summary.py` then shows a `Duplicate DICOM Images` column beside the
