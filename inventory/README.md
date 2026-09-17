@@ -328,6 +328,32 @@ The last one is easy to hit when a code appears at more than one level of a
 path - the **nearest** ancestor folder carrying a code wins, so
 `/archive/AA0976/QQQ0012 mixed/IM001` is attributed to QQQ0012, not AA0976.
 
+## `compare_folders.py`: is this folder a copy of that one?
+
+```bash
+python compare_folders.py --db inventory.db \
+    --path1 "/nas/AA0976 base" --path2 "/nas/AA0976 backup" --code AA0976
+```
+
+```
+  DUPLICATED FILES: 3
+
+  of the 3 DICOM files under path2, 3 are copies of an image
+  that also exists under path1 for patient AA0976
+
+  path1          3 files          3 distinct images   /nas/AA0976 base
+  path2          3 files          3 distinct images   /nas/AA0976 backup
+  shared         3 images in both
+  only in path2  0 images - what path2 adds
+```
+
+`only in path2` is the line that decides whether a folder can go: 0 means it
+holds nothing the other does not.
+
+Subfolders are included unless `--flat` is passed, `--code` narrows to one
+patient, and `--list 5` prints example file names. Needs `find_duplicates.py`
+to have been run once, and says so if it has not.
+
 ## `compare_headers.py`: what differs between two files
 
 `find_duplicates.py` says two files are the same image. This says how they
