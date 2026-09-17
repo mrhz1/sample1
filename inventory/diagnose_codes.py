@@ -252,6 +252,68 @@ def section_rejected(conn, code_re, prefixes, digits, hints, examples):
             print(f"             {ex[:64]}")
 
 
+# The guards, innermost first, exactly as build_code_re layers them. Each row
+# is (label, leading guard, trailing guard).
+VARIANTS = [
+    ("no guards (the original rule)", "", ""),
+    ("+ no longer digit run", "", r"(?!\d)"),
+    ("+ no letter after the number", "", r"(?![A-Za-z0-9])"),
+    ("+ no letter before the prefix", r"(?<![A-Za-z0-9])", r"(?![A-Za-z0-9])"),
+]
+
+
+def section_compare(conn, prefixes, digits, hints, examples):
+    """Patients found under each rule, so the cost of each guard is a number.
+
+    Run this instead of re-running report.py with one flag changed at a time:
+    it scans the same names once and reports what every variant would have
+    attributed, plus what the tighter rule dropped.
+    """
+    head("6. WHAT EACH RULE WOULD ATTRIBUTE")
+    alt = "|".join(re.escape(p.strip()) for p in prefixes.split(",") if p.strip())
+    lo, hi = 1, 5
+    names = list(iter_names(conn, hints))
+
+    results = []
+    for label, lead, trail in VARIANTS:
+        rx = re.compile(rf"{lead}(?:{alt})[-_ ]?\d{{{lo},{hi}}}{trail}",
+                        re.IGNORECASE)
+        found = {}
+        for kind, name in names:
+            got = parse_code(name, rx)
+            if got:
+                found.setdefault((got[0], got[1]), f"{kind}: {name}")
+        results.append((label, found))
+
+    if digits:
+        from report import parse_digits
+        dlo, dhi = parse_digits(digits)
+        lead, trail = VARIANTS[-1][1], VARIANTS[-1][2]
+        rx = re.compile(rf"{lead}(?:{alt})[-_ ]?\d{{{dlo},{dhi}}}{trail}",
+                        re.IGNORECASE)
+        found = {}
+        for kind, name in names:
+            got = parse_code(name, rx)
+            if got:
+                found.setdefault((got[0], got[1]), f"{kind}: {name}")
+        results.append((f"+ --digits {digits}", found))
+
+    print(f"  {'RULE':<34} {'PATIENTS':>9}  {'LOST HERE':>9}")
+    print("  " + "-" * 74)
+    previous = None
+    for label, found in results:
+        lost = 0 if previous is None else len(set(previous) - set(found))
+        print(f"  {label:<34} {len(found):>9,}  {lost:>9,}")
+        if previous is not None and lost:
+            for code in list(set(previous) - set(found))[:examples]:
+                print(f"      dropped {code[0]}{code[1]}: {previous[code][:52]}")
+        previous = found
+    print("\n  The last line is what report.py is using now. If the patient")
+    print("  count you expect is on an earlier line, that guard is the one")
+    print("  costing you - pass --code-regex to reproduce it exactly:")
+    print(f"      --code-regex \"(?:{alt})[-_ ]?[0-9]{{1,5}}\"")
+
+
 def main():
     ap = argparse.ArgumentParser(description=__doc__.split("\n")[0])
     ap.add_argument("--db", default="inventory.db")
@@ -278,6 +340,8 @@ def main():
     section_padding(conn, code_re, hints, args.examples)
     section_discover(conn, hints, args.examples)
     section_rejected(conn, code_re, prefixes, args.digits, hints, args.examples)
+    if prefixes:
+        section_compare(conn, prefixes, args.digits, hints, args.examples)
     print()
 
 

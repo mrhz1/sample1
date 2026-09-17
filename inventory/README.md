@@ -497,6 +497,36 @@ short codes; `--pad 4` is what makes them *display* four wide. Section 5 of
 Run that before trusting a tightened rule. Each line is a patient you no longer
 have.
 
+### Which rule cost me these patients?
+
+Section 6 answers it in one scan, instead of re-running `report.py` with one
+flag changed at a time:
+
+```
+6. WHAT EACH RULE WOULD ATTRIBUTE
+  RULE                                PATIENTS  LOST HERE
+  no guards (the original rule)             11          0
+  + no longer digit run                     11          0
+  + no letter after the number               9          2
+      dropped AA4: folder: AA0004base
+      dropped AA10: folder: AA0010A
+  + no letter before the prefix              7          2
+      dropped AA3: folder: EEAA0003
+      dropped AA7: folder: 2024AA0007
+  + --digits 1-5                             7          0
+```
+
+The last line is what `report.py` uses now. If the count you expect is on an
+earlier line, that guard is the one costing you, and the examples say whether
+the names it dropped are real patients or the junk the guard was added for.
+
+`--code-regex` reproduces any earlier line exactly, guards and all:
+
+```bash
+python report.py --db inventory.db --code-regex "(?:AA)[-_ ]?[0-9]{1,5}" \
+                 --out master_report.xlsx
+```
+
 **Every later tool displays these codes rather than deriving its own**, so
 after changing a matching rule, `report.py` has to be re-run before
 `patient_summary.py` or `match_report_from_db.py` will show the difference -
