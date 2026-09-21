@@ -39,6 +39,12 @@ Usage:
     --code-regex RE  Full override, if --prefixes isn't expressive enough.
     --digits SPEC    How many digits a code has: '4' for exactly four,
                      '3-5' for a range. Default 1-5.
+    --guards WHICH   What may sit against a code in a name. 'both' (default)
+                     requires a non-alphanumeric on each side, so AA9847AA and
+                     EEAA6079 are not codes. 'trailing' guards only the end -
+                     use it when real folders are named like 2024AA0007.
+                     'leading' guards only the start. 'none' is the old
+                     behaviour and will read AA9847AA as patient AA9847.
     --date-order X   Reading of ambiguous numeric dates: dmy (default) or mdy.
     --pad SPEC       Force the display width of the number instead of learning
                      it. '4' applies to every prefix, 'AA=4,AVDD=3' per prefix.
@@ -192,13 +198,26 @@ def parse_digits(spec):
     return int(spec), int(spec)
 
 
-def build_code_re(prefixes, override, digits=None):
+# What may sit immediately either side of a code. Loosening one of these is
+# sometimes necessary - an archive whose folders are named "2024AA0007" needs
+# the leading guard off - but each one loosened lets a longer token be read as
+# a code, so they are named rather than hand-written as a regex each time.
+GUARDS = {
+    "both":     (r"(?<![A-Za-z0-9])", r"(?![A-Za-z0-9])"),
+    "trailing": ("",                  r"(?![A-Za-z0-9])"),
+    "leading":  (r"(?<![A-Za-z0-9])", ""),
+    "none":     ("",                  ""),
+}
+
+
+def build_code_re(prefixes, override, digits=None, guards="both"):
     if override:
         return re.compile(override, re.IGNORECASE)
     if not prefixes:
         sys.exit("give --prefixes (run --discover first) or --code-regex")
     alt = "|".join(re.escape(p.strip()) for p in prefixes.split(",") if p.strip())
     lo, hi = parse_digits(digits)
+    lead, trail = GUARDS[guards]
     # --prefixes AA means the code IS "AA" plus digits - not a fragment of a
     # longer token. Both ends are guarded, so a code is a prefix that starts
     # the token, a digit run, and then something that is not a letter or digit:
@@ -209,9 +228,8 @@ def build_code_re(prefixes, override, digits=None):
     # Separators are not letters or digits, so _AA0001 and scan-AA0001 still
     # resolve; only a name that runs letters or digits straight into the code
     # is rejected, and that is not this archive's code.
-    return re.compile(
-        rf"(?<![A-Za-z0-9])(?:{alt})[-_ ]?\d{{{lo},{hi}}}(?![A-Za-z0-9])",
-        re.IGNORECASE)
+    return re.compile(rf"{lead}(?:{alt})[-_ ]?\d{{{lo},{hi}}}{trail}",
+                      re.IGNORECASE)
 
 
 def pattern_hints(pattern):
@@ -348,7 +366,8 @@ def kind_of(ext, probed):
 def build(args):
     conn = sqlite3.connect(args.db)
     root = conn.execute("SELECT value FROM meta WHERE key='root'").fetchone()[0]
-    code_re = build_code_re(args.prefixes, args.code_regex, args.digits)
+    code_re = build_code_re(args.prefixes, args.code_regex, args.digits,
+                            args.guards)
 
     probed_kind = dict(conn.execute(
         "SELECT id, kind FROM files WHERE kind IS NOT NULL"))
@@ -770,6 +789,8 @@ def main():
     ap.add_argument("--prefixes", default=None)
     ap.add_argument("--code-regex", default=None)
     ap.add_argument("--digits", default="1-5")
+    ap.add_argument("--guards", default="both",
+                    choices=sorted(GUARDS))
     ap.add_argument("--date-order", default="dmy", choices=["dmy", "mdy"])
     ap.add_argument("--pad", default=None)
     ap.add_argument("--prefer", default="filename", choices=["filename", "folder"])

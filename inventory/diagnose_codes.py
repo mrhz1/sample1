@@ -320,6 +320,7 @@ def main():
     ap.add_argument("--prefixes", default=None)
     ap.add_argument("--code-regex", default=None)
     ap.add_argument("--digits", default="1-5")
+    ap.add_argument("--guards", default="both")
     ap.add_argument("--examples", type=int, default=5)
     args = ap.parse_args()
 
@@ -334,7 +335,8 @@ def main():
     if not prefixes and not args.code_regex:
         print("\nGive --prefixes to analyse padding and --discover behaviour.")
         return
-    code_re = build_code_re(prefixes, args.code_regex, args.digits)
+    code_re = build_code_re(prefixes, args.code_regex, args.digits,
+                            args.guards)
     hints = sorted(set(pattern_hints(code_re.pattern)))
 
     section_padding(conn, code_re, hints, args.examples)

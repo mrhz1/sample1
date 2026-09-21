@@ -594,12 +594,23 @@ The last line is what `report.py` uses now. If the count you expect is on an
 earlier line, that guard is the one costing you, and the examples say whether
 the names it dropped are real patients or the junk the guard was added for.
 
-`--code-regex` reproduces any earlier line exactly, guards and all:
+`--guards` selects any of those lines by name, so there is no need to write a
+regex to loosen one rule:
+
+| `--guards` | rejects | keeps |
+|---|---|---|
+| `both` (default) | `AA9847AA`, `EEAA6079`, `2024AA0007`, `AA0055base` | |
+| `trailing` | `AA9847AA`, `AA0055base` | `EEAA6079`, `2024AA0007` |
+| `leading` | `EEAA6079`, `2024AA0007` | `AA9847AA`, `AA0055base` |
+| `none` | nothing | reads `AA9847AA` as patient `AA9847` |
 
 ```bash
-python report.py --db inventory.db --code-regex "(?:AA)[-_ ]?[0-9]{1,5}" \
+python report.py --db inventory.db --prefixes AA --guards trailing \
                  --out master_report.xlsx
 ```
+
+Prefer this to `--code-regex`: a hand-written pattern silently drops *every*
+guard, so loosening one rule quietly loosens the others too.
 
 **Every later tool displays these codes rather than deriving its own**, so
 after changing a matching rule, `report.py` has to be re-run before
