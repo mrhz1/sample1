@@ -168,12 +168,25 @@ def load_surgery(paths):
     return surgeries, spelling, problems, unreadable
 
 
+def study_day(text):
+    """A study_report date -> datetime.date, or None.
+
+    report.py writes YYYYMMDD, but databases built by other versions hold
+    2016-01-25, so only the digits are trusted.
+    """
+    digits = re.sub(r"\D", "", str(text or ""))[:8]
+    try:
+        return datetime.strptime(digits, "%Y%m%d").date()
+    except ValueError:
+        return None
+
+
 def phase_of(study_date, first_surgery, surgery_day):
-    if not study_date:
+    when = study_day(study_date)
+    if when is None:
         return UNDATED
     if first_surgery is None:
         return PRE
-    when = datetime.strptime(study_date, "%Y%m%d").date()
     if when < first_surgery:
         return PRE
     if when > first_surgery:
@@ -242,7 +255,7 @@ def main():
         else:
             first = surgeries[key][0] if surgeries[key] else None
             phase = phase_of(sdate, first, args.surgery_day)
-            if first and sdate == first.strftime("%Y%m%d"):
+            if first and study_day(sdate) == first:
                 on_the_day += 1
         rows.append(dict(key=key, code=code, date=sdate or "",
                          modality=modality or "", slices=slices or 0,
@@ -323,8 +336,8 @@ def main():
     sdata = []
     for r in sorted(rows, key=lambda r: (r["key"], r["date"])):
         days = ""
-        if r["first"] and r["date"]:
-            days = (datetime.strptime(r["date"], "%Y%m%d").date() - r["first"]).days
+        if r["first"] and study_day(r["date"]):
+            days = (study_day(r["date"]) - r["first"]).days
         sdata.append([r["code"], group(r["key"]) if r["key"] in surgeries else "",
                       r["first"], r["date"], days,
                       MODALITY_NAME.get(r["modality"], r["modality"]),
