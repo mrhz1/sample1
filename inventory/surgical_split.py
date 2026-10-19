@@ -82,6 +82,10 @@ MEASURES = [
     ("c", "without a raw {m}, but have {an} {m} report"),
 ]
 
+# The Patients sheet spells the verdict out, in report.py's Status wording,
+# so nobody has to remember which letter is which.
+VERDICT_LABEL = {"a": S_BOTH, "b": S_IMAGE, "c": S_REPORT}
+
 PRE, POST = "preop", "postop"
 UNDATED = "undated"
 UNREADABLE = "surgery date unreadable"
@@ -316,13 +320,13 @@ def main():
                 len(dates), dates[0] if dates else None,
                 ", ".join(d.isoformat() for d in dates)]
         for raw, ph in columns:
-            line.append(verdict.get((key, raw, ph), ""))
+            line.append(VERDICT_LABEL.get(verdict.get((key, raw, ph)), ""))
         pdata.append(line)
     ws = sheet(wb, "Patients",
           ["Archive Code", "REDCap ID", "Group", "Surgeries",
            "First Surgery", "All Surgery Dates"]
           + [f"{MODALITY_NAME[raw]} {ph}" for raw, ph in columns],
-          (13, 12, 10, 10, 13, 30) + (11,) * len(columns), pdata)
+          (13, 12, 10, 10, 13, 30) + (17,) * len(columns), pdata)
     for cell in ws["E"][1:]:
         cell.number_format = "yyyy-mm-dd"
 
