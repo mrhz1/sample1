@@ -47,6 +47,9 @@ Usage:
     --surgery-day X   Where a study ON the day of the first surgery goes:
                       'pre' (default) or 'post'. Intra-operative TEEs land
                       here; the run prints how many rows it affects.
+    --details         Also write the Studies sheet (every row behind every
+                      number) and the Check sheet (what was not counted).
+                      Off by default: the workbook is what gets sent.
 """
 
 import argparse
@@ -74,9 +77,9 @@ MODALITIES = [("US", "Echo"), ("CT", "CT"), ("MR", "MRI")]
 MODALITY_NAME = dict(MODALITIES)
 
 MEASURES = [
-    ("a", "matched raw {m} and {m} report"),
-    ("b", "raw {m}, but no matched {m} report"),
-    ("c", "no raw {m}, but {m} report present"),
+    ("a", "with a matched raw {m} and {m} report"),
+    ("b", "with a raw {m}, but without a matched {m} report"),
+    ("c", "without a raw {m}, but have {an} {m} report"),
 ]
 
 PRE, POST = "preop", "postop"
@@ -225,6 +228,7 @@ def main():
     ap.add_argument("--surgery", nargs="+", required=True)
     ap.add_argument("--out", default="surgical_split.xlsx")
     ap.add_argument("--surgery-day", choices=("pre", "post"), default="pre")
+    ap.add_argument("--details", action="store_true")
     args = ap.parse_args()
 
     if not os.path.exists(args.db):
@@ -286,28 +290,18 @@ def main():
     # --- Summary: laid out the way the request asks for it ---------------
     summary = []
     for cohort in cohorts:
-        members = [k for k in surgeries if k[0] == cohort]
-        n_surg = sum(1 for k in members if group(k) == "surgical")
-        n_med = sum(1 for k in members if group(k) == "medical")
         summary.append([f"{cohort} cohort", "", "", ""])
-        summary.append(["patients in REDCap", n_med, n_surg, ""])
-        summary.append(["  of whom anything in the archive",
-                        sum(1 for k in members if k in archive_codes
-                            and group(k) == "medical"),
-                        sum(1 for k in members if k in archive_codes
-                            and group(k) == "surgical"),
-                        ""])
         for raw, name in MODALITIES:
             for letter, text in MEASURES:
                 c = counts[cohort]
                 summary.append([
-                    f"  {letter}. {text.format(m=name)}",
+                    f"  {letter}. {text.format(m=name, an='an' if name[0] in 'AEIMO' else 'a')}",
                     c[("medical", PRE, raw, letter)],
                     c[("surgical", PRE, raw, letter)],
                     c[("surgical", POST, raw, letter)]])
         summary.append(["", "", "", ""])
     ws = sheet(wb, "Summary",
-               ["Patients", "Medical - PREOP", "Surgical - PREOP",
+               ["Number of patients", "Medical - PREOP", "Surgical - PREOP",
                 "Surgical - POSTOP"], (52, 16, 16, 16), summary, freeze=False)
     for row in ws.iter_rows(min_row=2):
         if row[0].value and row[0].value.endswith("cohort"):
@@ -332,25 +326,6 @@ def main():
     for cell in ws["E"][1:]:
         cell.number_format = "yyyy-mm-dd"
 
-    # --- Studies: every row behind every number --------------------------
-    sdata = []
-    for r in sorted(rows, key=lambda r: (r["key"], r["date"])):
-        days = ""
-        if r["first"] and study_day(r["date"]):
-            days = (study_day(r["date"]) - r["first"]).days
-        sdata.append([r["code"], group(r["key"]) if r["key"] in surgeries else "",
-                      r["first"], r["date"], days,
-                      MODALITY_NAME.get(r["modality"], r["modality"]),
-                      r["phase"], r["status"], r["slices"], r["report"],
-                      r["note"], r["folder"]])
-    ws = sheet(wb, "Studies",
-          ["Patient Code", "Group", "First Surgery", "Study Date",
-           "Days From Surgery", "Modality", "Phase", "Status", "DICOM Files",
-           "Report", "Note", "Folder"],
-          (13, 10, 13, 11, 11, 10, 13, 17, 11, 36, 40, 60), sdata)
-    for cell in ws["C"][1:]:
-        cell.number_format = "yyyy-mm-dd"
-
     # --- Check: what could not be placed ---------------------------------
     check = [list(p) for p in problems]
     for key in sorted(set(archive_codes) - set(surgeries)):
@@ -363,8 +338,32 @@ def main():
     for code, n in sorted(undated.items()):
         check.append(["archive", "", code, "",
                       f"{n} row(s) with no date - not counted"])
-    sheet(wb, "Check", ["Source", "Row", "Code", "Value", "Problem"],
-          (22, 6, 13, 20, 50), check)
+    # The two sheets below are for checking the numbers, not for sending,
+    # so they are only written on request.
+    if args.details:
+        # --- Studies: every row behind every number --------------------------
+        sdata = []
+        for r in sorted(rows, key=lambda r: (r["key"], r["date"])):
+            days = ""
+            if r["first"] and study_day(r["date"]):
+                days = (study_day(r["date"]) - r["first"]).days
+            sdata.append([r["code"], group(r["key"]) if r["key"] in surgeries else "",
+                          r["first"], r["date"], days,
+                          MODALITY_NAME.get(r["modality"], r["modality"]),
+                          r["phase"], r["status"], r["slices"], r["report"],
+                          r["note"], r["folder"]])
+        ws = sheet(wb, "Studies",
+              ["Patient Code", "Group", "First Surgery", "Study Date",
+               "Days From Surgery", "Modality", "Phase", "Status", "DICOM Files",
+               "Report", "Note", "Folder"],
+              (13, 10, 13, 11, 11, 10, 13, 17, 11, 36, 40, 60), sdata)
+        for cell in ws["C"][1:]:
+            cell.number_format = "yyyy-mm-dd"
+
+
+        sheet(wb, "Check", ["Source", "Row", "Code", "Value", "Problem"],
+              (22, 6, 13, 20, 50), check)
+
 
     wb.save(args.out)
 
@@ -380,7 +379,8 @@ def main():
           f"{'preop' if args.surgery_day == 'pre' else 'postop'}"
           f" (--surgery-day)")
     if check:
-        print(f"  {len(check):,} items on the Check sheet - not counted")
+        print(f"  {len(check):,} items not counted - see the Check sheet"
+              + ("" if args.details else " (add --details)"))
 
 
 if __name__ == "__main__":
