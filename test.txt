@@ -1,18 +1,18 @@
-python3 << 'EOF'
-import cmlapi
+import cmlapi, os, getpass
+
+print("Running as OS user:", getpass.getuser())
+print("Hadoop user:", os.environ.get("HADOOP_USER_NAME"))
+
 c = cmlapi.default_client()
 
 def tryit(label, fn):
     try:
-        r = fn(); print(f"[OK]   {label}:", r if not hasattr(r, 'username') else r.username)
+        fn(); print(f"[OK]   {label}")
     except cmlapi.rest.ApiException as e:
-        print(f"[FAIL] {label}: {e.status} {e.body[:150]}")
+        print(f"[FAIL] {label}: {e.status} {e.body[:120]}")
 
-# 1. Different type values
-tryit("type=team", lambda: c.create_team(cmlapi.CreateTeamRequest(username="seyed-test-02", type="team", cn="Seyed Test")))
-tryit("no type",   lambda: c.create_team(cmlapi.CreateTeamRequest(username="seyed-test-03", cn="Seyed Test")))
+tryit("list projects", lambda: c.list_projects(page_size=1))
+tryit("admin check (default quotas)", lambda: c.get_default_quotas())
 
-# 2. Admin check (read-only, changes nothing)
-tryit("get_default_quotas", lambda: c.get_default_quotas())
-tryit("list_users_quota",   lambda: c.list_users_quota())
-EOF
+p = c.list_projects(page_size=5).projects
+print("Projects visible:", [x.name for x in p])
