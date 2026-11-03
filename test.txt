@@ -1,6 +1,8 @@
-import cmlapi, inspect
+import inspect, cmlapi
 api = cmlapi.CMLServiceApi
-print(cmlapi.__version__ if hasattr(cmlapi, "__version__") else "")
-for name in dir(api):
-    if "file" in name.lower():
-        print(name, inspect.signature(getattr(api, name)))
+print(api.upload_file.__doc__)
+src = inspect.getsource(api.upload_file_with_http_info)
+start = src.find("all_params")
+print(src[start:start+600])
+start = src.find("form_params")
+print(src[start:start+1200])
