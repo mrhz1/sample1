@@ -1,6 +1,6 @@
-cat >> ~/.profile <<'EOF'
-
-# load nvm for non-interactive shells (GitLab runner)
-export NVM_DIR="$HOME/.nvm"
-[ -s "$NVM_DIR/nvm.sh" ] && . "$NVM_DIR/nvm.sh"
-EOF
+import cmlapi, inspect
+api = cmlapi.CMLServiceApi
+print(cmlapi.__version__ if hasattr(cmlapi, "__version__") else "")
+for name in dir(api):
+    if "file" in name.lower():
+        print(name, inspect.signature(getattr(api, name)))
