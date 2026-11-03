@@ -1,10 +1,18 @@
 python3 << 'EOF'
 import cmlapi
 c = cmlapi.default_client()
-try:
-    t = c.create_team(cmlapi.CreateTeamRequest(username="seyed-test-team-01", type="organization", cn="Seyed Test Team"))
-    print("Created:", t.username)
-except cmlapi.rest.ApiException as e:
-    print("Status:", e.status)
-    print("Reason:", e.body)
+
+def tryit(label, fn):
+    try:
+        r = fn(); print(f"[OK]   {label}:", r if not hasattr(r, 'username') else r.username)
+    except cmlapi.rest.ApiException as e:
+        print(f"[FAIL] {label}: {e.status} {e.body[:150]}")
+
+# 1. Different type values
+tryit("type=team", lambda: c.create_team(cmlapi.CreateTeamRequest(username="seyed-test-02", type="team", cn="Seyed Test")))
+tryit("no type",   lambda: c.create_team(cmlapi.CreateTeamRequest(username="seyed-test-03", cn="Seyed Test")))
+
+# 2. Admin check (read-only, changes nothing)
+tryit("get_default_quotas", lambda: c.get_default_quotas())
+tryit("list_users_quota",   lambda: c.list_users_quota())
 EOF
