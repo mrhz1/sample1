@@ -1,20 +1,6 @@
-Subject: Request: Google Maps Platform API access for postal code project
+cat >> ~/.profile <<'EOF'
 
-Hi team,
-
-I'm working on a project that takes postal codes as input and returns location-based data such as map and satellite images, traffic, air quality and pollen. Would it be possible to enable the following Google Maps Platform APIs on our Google Cloud project and provide an API key?
-
-1. Geocoding API – to convert postal codes into coordinates
-2. Maps Static API – for map and satellite images at several zoom levels
-3. Routes API – for typical traffic conditions near each location
-4. Air Quality API – for hourly air quality history (up to 30 days)
-5. Pollen API – for pollen data
-
-If possible, could the key be restricted to these five APIs? I'm happy to share the server IP or domain for the key restriction if that would help.
-
-I also wanted to mention that billing will need to be active on the project, since these are paid APIs. I can provide an estimate of expected request volume if that's useful for setting a budget or quota.
-
-Please let me know if you need any other details from me.
-
-Thanks so much,
-Seyed
+# load nvm for non-interactive shells (GitLab runner)
+export NVM_DIR="$HOME/.nvm"
+[ -s "$NVM_DIR/nvm.sh" ] && . "$NVM_DIR/nvm.sh"
+EOF
