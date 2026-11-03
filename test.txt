@@ -1,9 +1,15 @@
+import cmlapi, os, subprocess
+
+c = cmlapi.default_client()
+print("Hadoop user:", os.environ.get("HADOOP_USER_NAME"))
+
 # 1. Can the service account create a project and add someone?
 try:
     proj = c.create_project(cmlapi.CreateProjectRequest(
         name="SA Test Project", template="blank", visibility="private",
         default_project_engine_type="ml_runtime"))
     print("[OK]   project created:", proj.id, "owner:", proj.owner.username)
+
     c.add_project_collaborator(
         cmlapi.AddProjectCollaboratorRequest(permission="read"),
         proj.id, "seyed.hassanzadeh")
@@ -12,7 +18,6 @@ except cmlapi.rest.ApiException as e:
     print("[FAIL] project test:", e.status, e.body[:150])
 
 # 2. Can the service account read Ozone?
-import subprocess
-r = subprocess.run(["hdfs", "dfs", "-ls", "ofs://<ozone-service>/<volume>/<bucket>/"],
-                   capture_output=True, text=True)
+OZONE_PATH = "ofs://<ozone-service>/<volume>/<bucket>/"   # <-- put your real path here
+r = subprocess.run(["hdfs", "dfs", "-ls", OZONE_PATH], capture_output=True, text=True)
 print("Ozone:", r.stdout[:500] or r.stderr[:500])
