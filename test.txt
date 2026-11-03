@@ -1,31 +1,20 @@
-import cmlapi, time
-c = cmlapi.default_client()
+Subject: Request: Google Maps Platform API access for postal code project
 
-STAGING_ID = "PASTE-ID-HERE"
-KEEP = {"sample1.txt", "sample2.txt"}
-RESEARCHER = "seyed.hassanzadeh"
+Hi team,
 
-# 1. Create the new project as a fork of the staging project
-proj = c.create_project(cmlapi.CreateProjectRequest(
-    name="Researcher Test 01", visibility="private",
-    template="blank", default_project_engine_type="ml_runtime",
-    parent_project=STAGING_ID))
-print("[OK] created:", proj.id, "owner:", proj.owner.username)
+I'm working on a project that takes postal codes as input and returns location-based data such as map and satellite images, traffic, air quality and pollen. Would it be possible to enable the following Google Maps Platform APIs on our Google Cloud project and provide an API key?
 
-# 2. Give the fork time to finish, then see what was copied
-time.sleep(15)
-files = c.list_project_files(proj.id, "/").files
-print("Files after fork:", [f.path for f in files])
+1. Geocoding API – to convert postal codes into coordinates
+2. Maps Static API – for map and satellite images at several zoom levels
+3. Routes API – for typical traffic conditions near each location
+4. Air Quality API – for hourly air quality history (up to 30 days)
+5. Pollen API – for pollen data
 
-# 3. Remove every file the researcher should not have
-for f in files:
-    if f.path not in KEEP:
-        c.delete_project_file(proj.id, f.path)
-        print("  deleted:", f.path)
+If possible, could the key be restricted to these five APIs? I'm happy to share the server IP or domain for the key restriction if that would help.
 
-# 4. Confirm what's left, then give the researcher access
-print("Final files:", [f.path for f in c.list_project_files(proj.id, "/").files])
-c.add_project_collaborator(
-    cmlapi.AddProjectCollaboratorRequest(permission="write"), proj.id, RESEARCHER)
-print("[OK] researcher added")
-print("URL: https://research.apps.dap.sickkids.ca/svc_CHSSExpedition_M/" + proj.slug)
+I also wanted to mention that billing will need to be active on the project, since these are paid APIs. I can provide an estimate of expected request volume if that's useful for setting a budget or quota.
+
+Please let me know if you need any other details from me.
+
+Thanks so much,
+Seyed
