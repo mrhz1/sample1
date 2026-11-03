@@ -1,18 +1,18 @@
-import cmlapi, os, getpass
+# 1. Can the service account create a project and add someone?
+try:
+    proj = c.create_project(cmlapi.CreateProjectRequest(
+        name="SA Test Project", template="blank", visibility="private",
+        default_project_engine_type="ml_runtime"))
+    print("[OK]   project created:", proj.id, "owner:", proj.owner.username)
+    c.add_project_collaborator(
+        cmlapi.AddProjectCollaboratorRequest(permission="read"),
+        proj.id, "seyed.hassanzadeh")
+    print("[OK]   added you as collaborator")
+except cmlapi.rest.ApiException as e:
+    print("[FAIL] project test:", e.status, e.body[:150])
 
-print("Running as OS user:", getpass.getuser())
-print("Hadoop user:", os.environ.get("HADOOP_USER_NAME"))
-
-c = cmlapi.default_client()
-
-def tryit(label, fn):
-    try:
-        fn(); print(f"[OK]   {label}")
-    except cmlapi.rest.ApiException as e:
-        print(f"[FAIL] {label}: {e.status} {e.body[:120]}")
-
-tryit("list projects", lambda: c.list_projects(page_size=1))
-tryit("admin check (default quotas)", lambda: c.get_default_quotas())
-
-p = c.list_projects(page_size=5).projects
-print("Projects visible:", [x.name for x in p])
+# 2. Can the service account read Ozone?
+import subprocess
+r = subprocess.run(["hdfs", "dfs", "-ls", "ofs://<ozone-service>/<volume>/<bucket>/"],
+                   capture_output=True, text=True)
+print("Ozone:", r.stdout[:500] or r.stderr[:500])
