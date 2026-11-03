@@ -1,0 +1,17 @@
+python3 << 'EOF'
+import cmlapi, inspect
+
+# Request models: what fields they take
+for name in ["CreateTeamRequest", "CreateProjectRequest", "UpdateAcceleratorBasedTeamQuotaRequest"]:
+    cls = getattr(cmlapi, name, None)
+    print(f"\n== {name} ==")
+    print(cls.openapi_types if cls else "not found")
+
+# Method signatures and docs
+for m in ["create_team", "update_accelerator_based_team_quota",
+          "set_team_default_quota", "list_teams_accelerator_quota", "delete_team"]:
+    fn = getattr(cmlapi.CMLServiceApi, m)
+    doc = (fn.__doc__ or "").strip().splitlines()
+    print(f"\n== {m} ==")
+    print("\n".join(doc[:12]))
+EOF
