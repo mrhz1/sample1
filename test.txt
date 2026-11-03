@@ -1,6 +1,12 @@
 import cmlapi
 c = cmlapi.default_client()
+
+staging = c.create_project(cmlapi.CreateProjectRequest(
+    name="Data Staging SA", template="blank", visibility="private",
+    default_project_engine_type="ml_runtime"))
 c.add_project_collaborator(
     cmlapi.AddProjectCollaboratorRequest(permission="write"),
-    "tecf-ytxd-vkw8-vtn3", "seyed.hassanzadeh")
-print("[OK] upgraded to write")
+    staging.id, "seyed.hassanzadeh")
+
+print("STAGING_ID:", staging.id)
+print("URL: https://research.apps.dap.sickkids.ca/svc_CHSSExpedition_M/" + staging.slug)
