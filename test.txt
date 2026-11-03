@@ -1,9 +1,6 @@
-python3 << 'EOF'
 import cmlapi
 c = cmlapi.default_client()
-try:
-    p = c.get_project("tecf-ytxd-vkw8-vtn3")
-    print("[OK] I can see it:", p.name, "| owner:", p.owner.username, "| my perms:", p.permissions)
-except cmlapi.rest.ApiException as e:
-    print("[FAIL] get_project:", e.status, e.body[:150])
-EOF
+c.add_project_collaborator(
+    cmlapi.AddProjectCollaboratorRequest(permission="write"),
+    "tecf-ytxd-vkw8-vtn3", "seyed.hassanzadeh")
+print("[OK] upgraded to write")
