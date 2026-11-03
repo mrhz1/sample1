@@ -1,8 +1,20 @@
-import inspect, cmlapi
-api = cmlapi.CMLServiceApi
-print(api.upload_file.__doc__)
-src = inspect.getsource(api.upload_file_with_http_info)
-start = src.find("all_params")
-print(src[start:start+600])
-start = src.find("form_params")
-print(src[start:start+1200])
+import cmlapi
+api = cmlapi.default_client()
+PID = "PUT-STAGING-PROJECT-ID-HERE"
+
+print(cmlapi.CMLServiceApi.update_project_file_metadata.__doc__)
+print([n for n in dir(cmlapi) if "Metadata" in n or "FileMeta" in n])
+for n in dir(cmlapi):
+    if "UpdateProjectFile" in n:
+        print(n, getattr(cmlapi, n).swagger_types)
+
+# test: upload to the top level, then move into a folder that doesn't exist yet
+open("/tmp/hive_probe.txt", "w").write("probe")
+api.upload_file(PID, file="/tmp/hive_probe.txt")
+try:
+    body = cmlapi.UpdateProjectFileMetadataRequest(path="zz_probe/a/hive_probe.txt")
+    api.update_project_file_metadata(body, PID, "hive_probe.txt")
+    print("MOVED:", [f.path for f in api.list_project_files(PID, "zz_probe/a").files])
+except Exception as e:
+    print("MOVE FAILED:", type(e).__name__, getattr(e, "status", ""), getattr(e, "body", e))
+print("ROOT:", [f.path for f in api.list_project_files(PID, "/").files])
