@@ -1,26 +1,16 @@
 python3 << 'EOF'
 import cmlapi
+def fields(n):
+    c = getattr(cmlapi, n, None)
+    return (getattr(c, "openapi_types", None) or getattr(c, "swagger_types", None)) if c else None
 
-def fields(cls):
-    return getattr(cls, "openapi_types", None) or getattr(cls, "swagger_types", None)
+for n in ["CreateProjectRequest", "AcceleratorBasedTeamQuota", "CreateTeamRequest", "Team"]:
+    print(f"\n== {n} ==")
+    for k, v in (fields(n) or {}).items():
+        print(f"  {k}: {v}")
 
-# 1. All request/model classes related to teams or quotas
-print("== Models with Team/Quota in the name ==")
-for n in sorted(dir(cmlapi)):
-    if ("Team" in n or "Quota" in n) and isinstance(getattr(cmlapi, n), type):
-        print(" ", n)
-
-# 2. Fields of the key models
-for name in ["CreateTeamRequest", "CreateProjectRequest",
-             "UpdateAcceleratorBasedTeamQuotaRequest"]:
-    cls = getattr(cmlapi, name, None)
-    print(f"\n== {name} ==")
-    print(fields(cls) if cls else "not found")
-
-# 3. Method docs
-for m in ["create_team", "update_accelerator_based_team_quota",
-          "set_team_default_quota", "delete_team"]:
-    doc = (getattr(cmlapi.CMLServiceApi, m).__doc__ or "").strip().splitlines()
-    print(f"\n== {m} ==")
-    print("\n".join(doc[:12]))
+print("\n== project/team methods ==")
+for m in sorted(dir(cmlapi.CMLServiceApi)):
+    if not m.startswith("_") and not m.endswith("with_http_info") and ("project" in m or "team" in m):
+        print(" ", m)
 EOF
