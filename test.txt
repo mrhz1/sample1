@@ -1,16 +1,10 @@
 python3 << 'EOF'
 import cmlapi
-def fields(n):
-    c = getattr(cmlapi, n, None)
-    return (getattr(c, "openapi_types", None) or getattr(c, "swagger_types", None)) if c else None
-
-for n in ["CreateProjectRequest", "AcceleratorBasedTeamQuota", "CreateTeamRequest", "Team"]:
-    print(f"\n== {n} ==")
-    for k, v in (fields(n) or {}).items():
-        print(f"  {k}: {v}")
-
-print("\n== project/team methods ==")
-for m in sorted(dir(cmlapi.CMLServiceApi)):
-    if not m.startswith("_") and not m.endswith("with_http_info") and ("project" in m or "team" in m):
-        print(" ", m)
+c = cmlapi.default_client()
+try:
+    t = c.create_team(cmlapi.CreateTeamRequest(username="seyed-test-team-01", type="organization", cn="Seyed Test Team"))
+    print("Created:", t.username)
+except cmlapi.rest.ApiException as e:
+    print("Status:", e.status)
+    print("Reason:", e.body)
 EOF
