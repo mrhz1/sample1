@@ -1,20 +1,15 @@
-import cmlapi
-api = cmlapi.default_client()
-PID = "PUT-STAGING-PROJECT-ID-HERE"
+print(cmlapi.FileInfo.swagger_types)
 
-print(cmlapi.CMLServiceApi.update_project_file_metadata.__doc__)
-print([n for n in dir(cmlapi) if "Metadata" in n or "FileMeta" in n])
-for n in dir(cmlapi):
-    if "UpdateProjectFile" in n:
-        print(n, getattr(cmlapi, n).swagger_types)
+def try_move(target):
+    try:
+        api.update_project_file_metadata(cmlapi.FileInfo(path=target), PID, "hive_probe.txt")
+        folder = target.rsplit("/", 1)[0]
+        print("MOVED to", target, "->", [f.path for f in api.list_project_files(PID, folder).files])
+        return True
+    except Exception as e:
+        print("MOVE to", target, "FAILED:", type(e).__name__, getattr(e, "status", ""), getattr(e, "body", e))
+        return False
 
-# test: upload to the top level, then move into a folder that doesn't exist yet
-open("/tmp/hive_probe.txt", "w").write("probe")
-api.upload_file(PID, file="/tmp/hive_probe.txt")
-try:
-    body = cmlapi.UpdateProjectFileMetadataRequest(path="zz_probe/a/hive_probe.txt")
-    api.update_project_file_metadata(body, PID, "hive_probe.txt")
-    print("MOVED:", [f.path for f in api.list_project_files(PID, "zz_probe/a").files])
-except Exception as e:
-    print("MOVE FAILED:", type(e).__name__, getattr(e, "status", ""), getattr(e, "body", e))
+# 1) into folders that don't exist yet; 2) if that fails, into an existing folder
+try_move("zz_probe/a/hive_probe.txt") or try_move("PKU7K/hive_probe.txt")
 print("ROOT:", [f.path for f in api.list_project_files(PID, "/").files])
