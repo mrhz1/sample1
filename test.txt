@@ -1,12 +1,22 @@
-import cmlapi
+import cmlapi, time
 c = cmlapi.default_client()
 
-staging = c.create_project(cmlapi.CreateProjectRequest(
-    name="Data Staging SA", template="blank", visibility="private",
-    default_project_engine_type="ml_runtime"))
-c.add_project_collaborator(
-    cmlapi.AddProjectCollaboratorRequest(permission="write"),
-    staging.id, "seyed.hassanzadeh")
+STAGING_ID = "PASTE-ID-HERE"
+KEEP = {"sample1.txt", "sample2.txt"}
+RESEARCHER = "seyed.hassanzadeh"
 
-print("STAGING_ID:", staging.id)
-print("URL: https://research.apps.dap.sickkids.ca/svc_CHSSExpedition_M/" + staging.slug)
+proj = c.create_project(cmlapi.CreateProjectRequest(
+    name="Researcher Test 01", visibility="private",
+    parent_project=STAGING_ID))
+print("[OK] created:", proj.id, "owner:", proj.owner.username)
+time.sleep(15)
+
+for f in c.list_project_files(proj.id, "/").files:
+    if f.path not in KEEP:
+        c.delete_project_file(proj.id, f.path)
+        print("  deleted:", f.path)
+
+print("Final files:", [f.path for f in c.list_project_files(proj.id, "/").files])
+c.add_project_collaborator(
+    cmlapi.AddProjectCollaboratorRequest(permission="write"), proj.id, RESEARCHER)
+print("[OK] researcher added")
