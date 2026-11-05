@@ -1,26 +1,17 @@
-$out = "C:\Temp\step3.txt"
+$out = "C:\Temp\step4.txt"
+$root = (Get-Location).Path + '\'
 
-"##### API CONTROLLERS" | Set-Content $out
-"Aggregate","Automation","Backup","Import","Scan" | ForEach-Object {
-  Get-ChildItem src -Recurse -Filter "$($_)Controller.cs" | ForEach-Object {
-    "== $($_.FullName)"
-    Select-String -Path $_.FullName -Pattern 'class |public |\[' | ForEach-Object { "   " + $_.Line.Trim() }
-  }
+"##### CRYPTO + SECURITY (full code)" | Set-Content $out
+Get-ChildItem src\Domain\Services\Cryptography, src\Domain\Services\Security, src\Web\Services\Security -Recurse -Filter *.cs | ForEach-Object {
+  "== $($_.FullName.Replace($root, ''))"
+  Get-Content $_.FullName
 } | Add-Content $out
 
 "" | Add-Content $out
-"##### CLIENT + CONSOLE FILES" | Add-Content $out
-Get-ChildItem src\Client, src\Console -Recurse -Include *.cs, *.xaml |
-  Where-Object { $_.FullName -notmatch '\\(bin|obj)\\' } |
-  ForEach-Object { $_.FullName.Replace((Get-Location).Path + '\', '') } |
-  Add-Content $out
-
-"" | Add-Content $out
-"##### CONSOLE Program.cs" | Add-Content $out
-Get-Content src\Console\Program.cs | Add-Content $out
-
-"" | Add-Content $out
-"##### Global.asax.cs" | Add-Content $out
-Get-Content src\Web\Global.asax.cs | Add-Content $out
+"##### SIGNATURES" | Add-Content $out
+Get-ChildItem src\Domain\Data\Report, src\Domain\Data\Query, src\Domain\Services\Notifications, src\Web\Services\Logger, src\Client\ViewModels -Recurse -Filter *.cs | ForEach-Object {
+  "== $($_.FullName.Replace($root, ''))"
+  Select-String -Path $_.FullName -Pattern 'class |public |private .*\(' | ForEach-Object { "   " + $_.Line.Trim() }
+} | Add-Content $out
 
 code $out
