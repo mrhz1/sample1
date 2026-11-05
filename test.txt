@@ -1,4 +1,19 @@
-INSERT INTO dbo.Centres (Fullname, Hostname, ConnectionString, DashboardMessage, IncludeAggregate)
-VALUES ('Local Demo Centre', 'localhost',
- 'Data Source=(localdb)\MSSQLLocalDB;Initial Catalog=Cvsdb_Demo;Integrated Security=True;MultipleActiveResultSets=True',
- 'Local test install', 0);
+SELECT t.name AS TableName, c.name AS ColumnName, ty.name AS DataType,
+  CASE WHEN c.max_length = -1 THEN 'max' ELSE CAST(c.max_length AS varchar) END AS MaxLen,
+  c.is_nullable AS Nullable,
+  CASE WHEN pk.column_id IS NOT NULL THEN 'PK' ELSE '' END AS PK,
+  ISNULL(rt.name + '.' + rc.name, '') AS ReferencesTo
+FROM sys.tables t
+JOIN sys.columns c ON c.object_id = t.object_id
+JOIN sys.types ty ON ty.user_type_id = c.user_type_id
+LEFT JOIN (SELECT ic.object_id, ic.column_id FROM sys.indexes i
+           JOIN sys.index_columns ic ON ic.object_id = i.object_id AND ic.index_id = i.index_id
+           WHERE i.is_primary_key = 1) pk
+  ON pk.object_id = t.object_id AND pk.column_id = c.column_id
+LEFT JOIN sys.foreign_key_columns fkc
+  ON fkc.parent_object_id = t.object_id AND fkc.parent_column_id = c.column_id
+LEFT JOIN sys.tables rt ON rt.object_id = fkc.referenced_object_id
+LEFT JOIN sys.columns rc
+  ON rc.object_id = fkc.referenced_object_id AND rc.column_id = fkc.referenced_column_id
+WHERE t.name <> '__MigrationHistory'
+ORDER BY t.name, c.column_id;
