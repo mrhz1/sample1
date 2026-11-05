@@ -1,7 +1,15 @@
-$out = "C:\Temp\controllers.txt"
-Get-ChildItem src -Recurse -Include *Controller.cs | Where-Object { $_.FullName -notmatch '\\(bin|obj)\\' } | ForEach-Object {
-  "== $($_.Name)"
-  Select-String -Path $_.FullName -Pattern 'DomainAuthorize|\[Http(Post|Get)\]|public .*Result\s+\w+\(' | ForEach-Object { "   " + $_.Line.Trim() }
-} | Set-Content $out
-Get-ChildItem src -Directory -Recurse | Where-Object { $_.FullName -notmatch '\\(bin|obj|packages)\\?' } | ForEach-Object { $_.FullName.Replace((Get-Location).Path + '\','') } | Add-Content $out
+$out = "C:\Temp\step3.txt"
+"##### API CONTROLLERS" | Set-Content $out
+foreach ($n in "Aggregate","Automation","Backup","Import","Scan") {
+  Get-ChildItem src -Recurse -Filter "${n}Controller.cs" | ForEach-Object {
+    "== $($_.FullName)"
+    Select-String -Path $_.FullName -Pattern 'class |public |\[' | ForEach-Object { "   " + $_.Line.Trim() }
+  }
+} | Add-Content $out
+"##### CLIENT + CONSOLE FILES" | Add-Content $out
+Get-ChildItem src\Client, src\Console -Recurse -Include *.cs, *.xaml | Where-Object { $_.FullName -notmatch '\\(bin|obj)\\' } | ForEach-Object { $_.FullName } | Add-Content $out
+"##### CONSOLE Program.cs" | Add-Content $out
+Get-Content src\Console\Program.cs | Add-Content $out
+"##### Global.asax.cs" | Add-Content $out
+Get-Content src\Web\Global.asax.cs | Add-Content $out
 code $out
