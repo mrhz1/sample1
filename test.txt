@@ -1,17 +1,6 @@
-$out = "C:\Temp\step4.txt"
-$root = (Get-Location).Path + '\'
-
-"##### CRYPTO + SECURITY (full code)" | Set-Content $out
-Get-ChildItem src\Domain\Services\Cryptography, src\Domain\Services\Security, src\Web\Services\Security -Recurse -Filter *.cs | ForEach-Object {
-  "== $($_.FullName.Replace($root, ''))"
-  Get-Content $_.FullName
-} | Add-Content $out
-
-"" | Add-Content $out
-"##### SIGNATURES" | Add-Content $out
-Get-ChildItem src\Domain\Data\Report, src\Domain\Data\Query, src\Domain\Services\Notifications, src\Web\Services\Logger, src\Client\ViewModels -Recurse -Filter *.cs | ForEach-Object {
-  "== $($_.FullName.Replace($root, ''))"
-  Select-String -Path $_.FullName -Pattern 'class |public |private .*\(' | ForEach-Object { "   " + $_.Line.Trim() }
-} | Add-Content $out
-
+$out = "C:\Temp\step5.txt"
+"##### UserRepository" | Set-Content $out
+Get-ChildItem src -Recurse -Filter UserRepository.cs | ForEach-Object { Get-Content $_.FullName } | Add-Content $out
+"##### Patient encryption usage" | Add-Content $out
+Get-ChildItem src\Domain -Recurse -Filter *.cs | Select-String -Pattern 'PrivateCipher|PrivateSalt|CryptoProvider' -Context 3 | ForEach-Object { $_.ToString() } | Add-Content $out
 code $out
