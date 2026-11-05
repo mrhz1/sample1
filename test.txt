@@ -1,6 +1,5 @@
-$out = "C:\Temp\step5.txt"
-"##### UserRepository" | Set-Content $out
-Get-ChildItem src -Recurse -Filter UserRepository.cs | ForEach-Object { Get-Content $_.FullName } | Add-Content $out
-"##### Patient encryption usage" | Add-Content $out
-Get-ChildItem src\Domain -Recurse -Filter *.cs | Select-String -Pattern 'PrivateCipher|PrivateSalt|CryptoProvider' -Context 3 | ForEach-Object { $_.ToString() } | Add-Content $out
+$out = "C:\Temp\step6.txt"
+Get-ChildItem src\Domain -Recurse -Include User.cs, PersonalInfo.cs, Patient.cs |
+  Select-String -Pattern 'HashPassword\(|class PersonalInfo' -Context 0,25 |
+  ForEach-Object { $_.ToString() } | Set-Content $out
 code $out
