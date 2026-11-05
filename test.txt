@@ -1,1 +1,4 @@
-Update-Database -ConfigurationTypeName Cvsdb.Data.EF4.Migrations.Model.Configuration -ConnectionString "Data Source=(localdb)\MSSQLLocalDB;Initial Catalog=Cvsdb_Demo;Integrated Security=True;MultipleActiveResultSets=True" -ConnectionProviderName "System.Data.SqlClient" -Verbose
+INSERT INTO dbo.Centres (Fullname, Hostname, ConnectionString, DashboardMessage, IncludeAggregate)
+VALUES ('Local Demo Centre', 'localhost',
+ 'Data Source=(localdb)\MSSQLLocalDB;Initial Catalog=Cvsdb_Demo;Integrated Security=True;MultipleActiveResultSets=True',
+ 'Local test install', 0);
