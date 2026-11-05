@@ -1,15 +1,1 @@
-print(cmlapi.FileInfo.swagger_types)
-
-def try_move(target):
-    try:
-        api.update_project_file_metadata(cmlapi.FileInfo(path=target), PID, "hive_probe.txt")
-        folder = target.rsplit("/", 1)[0]
-        print("MOVED to", target, "->", [f.path for f in api.list_project_files(PID, folder).files])
-        return True
-    except Exception as e:
-        print("MOVE to", target, "FAILED:", type(e).__name__, getattr(e, "status", ""), getattr(e, "body", e))
-        return False
-
-# 1) into folders that don't exist yet; 2) if that fails, into an existing folder
-try_move("zz_probe/a/hive_probe.txt") or try_move("PKU7K/hive_probe.txt")
-print("ROOT:", [f.path for f in api.list_project_files(PID, "/").files])
+Update-Database -ConfigurationTypeName Cvsdb.Data.EF4.Migrations.Model.Configuration -ConnectionString "Data Source=(localdb)\MSSQLLocalDB;Initial Catalog=Cvsdb_Demo;Integrated Security=True;MultipleActiveResultSets=True" -ConnectionProviderName "System.Data.SqlClient" -Verbose
