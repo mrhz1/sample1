@@ -1,11 +1,1 @@
-INSERT INTO dbo.PatientStatusTypes (Code, Description) VALUES
-('/1','Asymptomatic'), ('/2','Mild Symptoms'), ('/3','Moderate Symptoms'),
-('/4','Severe Symptoms'), ('/5','Death'), ('/6','Symptoms Unknown'),
-('/7','Discharged'), ('/8','Last Seen');
-
-INSERT INTO dbo.OperationLocations (Code, Description) VALUES
-('/1','OR'), ('/2','ICU/PICU/NICU'), ('/3','Cath Lab'), ('/4','Other');
-
-INSERT INTO dbo.PreviousOperationTypes (Code, Description) VALUES
-('/2','Cardiotomy'), ('/3','Extra-cardiac Palliation'), ('/4','Extra-cardiac Repair'),
-('/5','Intra-cardiac Palliation'), ('/6','Intra-cardiac Repair');
+Update-Database -ConfigurationTypeName Cvsdb.Data.EF4.Migrations.Model.Configuration -ConnectionString "Data Source=(localdb)\MSSQLLocalDB;Initial Catalog=Cvsdb_Demo;Integrated Security=True;MultipleActiveResultSets=True" -ConnectionProviderName "System.Data.SqlClient"
