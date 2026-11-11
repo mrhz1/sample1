@@ -1,5 +1,11 @@
-$out = "C:\Temp\step6.txt"
-Get-ChildItem src\Domain -Recurse -Include User.cs, PersonalInfo.cs, Patient.cs |
-  Select-String -Pattern 'HashPassword\(|class PersonalInfo' -Context 0,25 |
-  ForEach-Object { $_.ToString() } | Set-Content $out
-code $out
+INSERT INTO dbo.PatientStatusTypes (Code, Description) VALUES
+('/1','Asymptomatic'), ('/2','Mild Symptoms'), ('/3','Moderate Symptoms'),
+('/4','Severe Symptoms'), ('/5','Death'), ('/6','Symptoms Unknown'),
+('/7','Discharged'), ('/8','Last Seen');
+
+INSERT INTO dbo.OperationLocations (Code, Description) VALUES
+('/1','OR'), ('/2','ICU/PICU/NICU'), ('/3','Cath Lab'), ('/4','Other');
+
+INSERT INTO dbo.PreviousOperationTypes (Code, Description) VALUES
+('/2','Cardiotomy'), ('/3','Extra-cardiac Palliation'), ('/4','Extra-cardiac Repair'),
+('/5','Intra-cardiac Palliation'), ('/6','Intra-cardiac Repair');
