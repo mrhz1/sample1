@@ -1,0 +1,38 @@
+# Enter the key (hidden, not saved)
+read -s -p "Google API key: " KEY && echo
+LAT=43.6573; LNG=-79.3879
+
+# 1. Geocoding
+curl -s "https://maps.googleapis.com/maps/api/geocode/json?components=postal_code:M5G|country:CA&key=$KEY" | head -c 400; echo
+
+# 2. Elevation
+curl -s "https://maps.googleapis.com/maps/api/elevation/json?locations=$LAT,$LNG&key=$KEY"; echo
+
+# 3. Maps Static (saves an image you can open)
+curl -s -o test_map.png -w "HTTP %{http_code}  %{content_type}\n" \
+  "https://maps.googleapis.com/maps/api/staticmap?center=$LAT,$LNG&zoom=15&size=640x640&maptype=satellite&key=$KEY"
+
+# 4. Routes (with traffic)
+curl -s -w "\nHTTP %{http_code}\n" -X POST "https://routes.googleapis.com/directions/v2:computeRoutes" \
+  -H "Content-Type: application/json" -H "X-Goog-Api-Key: $KEY" \
+  -H "X-Goog-FieldMask: routes.duration,routes.staticDuration,routes.distanceMeters" \
+  -d '{"origin":{"location":{"latLng":{"latitude":43.6573,"longitude":-79.3879}}},
+       "destination":{"location":{"latLng":{"latitude":43.6573,"longitude":-79.3780}}},
+       "travelMode":"DRIVE","routingPreference":"TRAFFIC_AWARE_OPTIMAL"}'
+
+# 5. Air Quality (current)
+curl -s -w "\nHTTP %{http_code}\n" -X POST "https://airquality.googleapis.com/v1/currentConditions:lookup" \
+  -H "Content-Type: application/json" -H "X-Goog-Api-Key: $KEY" \
+  -d '{"location":{"latitude":43.6573,"longitude":-79.3879}}'
+
+# 6. Pollen
+curl -s -w "\nHTTP %{http_code}\n" -H "X-Goog-Api-Key: $KEY" \
+  "https://pollen.googleapis.com/v1/forecast:lookup?location.latitude=$LAT&location.longitude=$LNG&days=1" | tail -c 400
+
+# 7. Weather
+curl -s -w "\nHTTP %{http_code}\n" -H "X-Goog-Api-Key: $KEY" \
+  "https://weather.googleapis.com/v1/currentConditions:lookup?location.latitude=$LAT&location.longitude=$LNG" | tail -c 400
+
+# 8. Solar
+curl -s -w "\nHTTP %{http_code}\n" -H "X-Goog-Api-Key: $KEY" \
+  "https://solar.googleapis.com/v1/buildingInsights:findClosest?location.latitude=$LAT&location.longitude=$LNG&requiredQuality=LOW" | tail -c 400
